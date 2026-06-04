@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM docker.xuanyuan.me/library/node:22-alpine AS builder
 
 RUN apk add --no-cache python3 make g++
 
@@ -8,7 +8,7 @@ RUN npm config set registry https://registry.npmmirror.com && npm ci
 COPY . .
 RUN npm run build
 
-FROM node:22-alpine
+FROM docker.xuanyuan.me/library/node:22-alpine
 
 RUN apk add --no-cache python3 make g++
 
