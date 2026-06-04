@@ -1,6 +1,7 @@
 FROM docker.1ms.run/library/node:22-alpine AS builder
 
-RUN apk add --no-cache python3 make g++
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache python3 make g++
 
 WORKDIR /app
 COPY package*.json ./
@@ -9,8 +10,6 @@ COPY . .
 RUN npm run build
 
 FROM docker.1ms.run/library/node:22-alpine
-
-RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 COPY package*.json ./
