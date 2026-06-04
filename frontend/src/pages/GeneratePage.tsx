@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Composer } from '@/components/ui/composer'
-import { Badge } from '@/components/ui/badge'
 import { cn, toImageSrc } from '@/lib/utils'
 import { Image, ImageOff, Loader2, PanelRightClose, History, Send, ChevronDown, X, CircleAlert, RotateCcw, Copy, Check, CheckCircle2, Pin, Upload, AlertTriangle } from 'lucide-react'
 import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'

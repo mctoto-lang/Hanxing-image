@@ -486,7 +486,7 @@ export default function AdminUsers() {
               <Label htmlFor="create-role">角色</Label>
               <Select
                 value={newRole}
-                onValueChange={(value: string) => setNewRole(value)}
+                onValueChange={(value: string | null) => setNewRole(value ?? 'user')}
               >
                 <SelectTrigger id="create-role">
                   <SelectValue placeholder="选择角色" />
