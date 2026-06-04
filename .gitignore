@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+uploads/
+data/
+*.log
+.kiro/
+项目-用户提供文件/
