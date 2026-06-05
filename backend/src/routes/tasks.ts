@@ -48,7 +48,7 @@ taskRouter.post('/generate', authMiddleware, async (req: AuthRequest, res) => {
     }
 
     const activeCount = query(
-      "SELECT COUNT(*) FROM generation_tasks WHERE user_id = ? AND status IN ('queued', 'processing')",
+      "SELECT COUNT(*) as count FROM generation_tasks WHERE user_id = ? AND status IN ('queued', 'processing')",
       [req.userId]
     );
     if (parseInt(activeCount.rows[0].count) >= (user.max_concurrent || 2)) {
@@ -133,7 +133,7 @@ taskRouter.get('/history', authMiddleware, async (req: AuthRequest, res) => {
       [...params, limit, offset]
     );
     const countResult = query(
-      `SELECT COUNT(*) FROM generation_tasks t ${whereClause}`,
+      `SELECT COUNT(*) as count FROM generation_tasks t ${whereClause}`,
       params
     );
     return res.json({
@@ -170,7 +170,7 @@ taskRouter.post('/:id/retry', authMiddleware, async (req: AuthRequest, res) => {
     const user = userResult.rows[0];
 
     const activeCount = query(
-      "SELECT COUNT(*) FROM generation_tasks WHERE user_id = ? AND status IN ('queued', 'processing')",
+      "SELECT COUNT(*) as count FROM generation_tasks WHERE user_id = ? AND status IN ('queued', 'processing')",
       [req.userId]
     );
     if (parseInt(activeCount.rows[0].count) >= (user.max_concurrent || 2)) {
