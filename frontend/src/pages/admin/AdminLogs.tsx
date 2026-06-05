@@ -39,6 +39,19 @@ interface TaskLog {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  api_call_logs?: ApiCallLog[]
+}
+
+interface ApiCallLog {
+  id: number
+  task_id: number
+  call_index: number
+  status: string
+  error_message: string | null
+  request_params: string | null
+  response_summary: string | null
+  elapsed_ms: number | null
+  created_at: string
 }
 
 interface LoginLog {
@@ -248,9 +261,22 @@ export default function AdminLogs() {
     return <Badge variant="secondary">自由创作</Badge>
   }
 
-  const openTaskDetail = (task: TaskLog) => {
+  const openTaskDetail = async (task: TaskLog) => {
     setSelectedTask(task)
     setSheetOpen(true)
+    // 获取完整任务详情（含 api_call_logs）
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(`/api/admin/logs/tasks/${task.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.task?.api_call_logs) {
+          setSelectedTask({ ...task, api_call_logs: data.task.api_call_logs })
+        }
+      }
+    } catch {}
   }
 
   const openErrorDialog = (errorMsg: string) => {
@@ -561,90 +587,104 @@ export default function AdminLogs() {
                 )}
               </div>
 
+              {/* API 调用记录 */}
               {(() => {
-                const retryErrors: string[] = Array.isArray(selectedTask.retry_errors) ? selectedTask.retry_errors : []
-                if (retryErrors.length === 0 && !selectedTask.error_message) return null
+                const callLogs = selectedTask.api_call_logs
+                if (!callLogs || callLogs.length === 0) {
+                  // 兼容旧数据：使用 retry_errors 展示
+                  const retryErrors: string[] = Array.isArray(selectedTask.retry_errors) ? selectedTask.retry_errors : []
+                  if (retryErrors.length === 0 && !selectedTask.error_message) return null
+                  return (
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium text-foreground">错误信息</Label>
+                      <div className="space-y-2">
+                        {retryErrors.map((err, idx) => {
+                          const parsed = parseErrorMessage(err)
+                          const isTimeout = parsed.errorType === '请求超时'
+                          return (
+                            <div key={idx} className="rounded-lg border border-destructive/20 overflow-hidden">
+                              <div className="px-3 py-1.5 bg-destructive/5 border-b border-destructive/10 flex items-center gap-2">
+                                <Badge variant={isTimeout ? 'secondary' : 'destructive'} className={isTimeout ? 'bg-orange-500 hover:bg-orange-600 text-[10px] px-1.5 py-0' : 'text-[10px] px-1.5 py-0'}>
+                                  {parsed.errorType}
+                                </Badge>
+                                <span className="text-[10px] text-muted-foreground font-medium">
+                                  {retryErrors.length > 1 ? `第${idx + 1}次` : '错误信息'}
+                                </span>
+                              </div>
+                              <div className="p-3 bg-destructive/10 space-y-1.5">
+                                <p className="text-xs font-mono break-all text-destructive">{parsed.coreMessage}</p>
+                                {(parsed.elapsed || parsed.timestamp) && (
+                                  <div className="flex gap-3 text-[10px] text-muted-foreground pt-1 border-t border-destructive/10">
+                                    {parsed.elapsed && <span>耗时: {parsed.elapsed}</span>}
+                                    {parsed.timestamp && <span>时间: {parsed.timestamp}</span>}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                }
+
+                // 使用 api_call_logs 展示
                 return (
                   <div className="space-y-2">
-                    <Label className="text-sm font-medium text-foreground">错误信息</Label>
+                    <Label className="text-sm font-medium text-foreground">
+                      API 调用记录
+                      <span className="text-muted-foreground font-normal ml-1.5">({callLogs.length}次)</span>
+                    </Label>
                     <div className="space-y-2">
-                      {retryErrors.map((err, idx) => {
-                        const parsed = parseErrorMessage(err)
-                        const isTimeout = parsed.errorType === '请求超时'
+                      {callLogs.map((log) => {
+                        const isSuccess = log.status === 'success'
+                        const isPending = log.status === 'pending'
+                        let requestParams: any = null
+                        try { requestParams = log.request_params ? JSON.parse(log.request_params) : null } catch {}
+
                         return (
-                          <div key={idx} className="rounded-lg border border-destructive/20 overflow-hidden">
-                            <div className="px-3 py-1.5 bg-destructive/5 border-b border-destructive/10 flex items-center gap-2">
-                              <Badge variant={isTimeout ? 'secondary' : 'destructive'} className={isTimeout ? 'bg-orange-500 hover:bg-orange-600 text-[10px] px-1.5 py-0' : 'text-[10px] px-1.5 py-0'}>
-                                {parsed.errorType}
+                          <div key={log.id} className={`rounded-lg border overflow-hidden ${isSuccess ? 'border-green-200' : isPending ? 'border-yellow-200' : 'border-destructive/20'}`}>
+                            <div className={`px-3 py-1.5 border-b flex items-center gap-2 ${isSuccess ? 'bg-green-50 border-green-200' : isPending ? 'bg-yellow-50 border-yellow-200' : 'bg-destructive/5 border-destructive/10'}`}>
+                              <Badge className={`text-[10px] px-1.5 py-0 ${isSuccess ? 'bg-green-500 hover:bg-green-600' : isPending ? 'bg-yellow-500 hover:bg-yellow-600' : 'bg-red-500 hover:bg-red-600'}`}>
+                                {isSuccess ? '成功' : isPending ? '等待中' : '失败'}
                               </Badge>
                               <span className="text-[10px] text-muted-foreground font-medium">
-                                {retryErrors.length > 1 ? `第${idx + 1}次` : '错误信息'}
+                                第{log.call_index}次调用
                               </span>
+                              {log.elapsed_ms != null && (
+                                <span className="text-[10px] text-muted-foreground ml-auto">
+                                  耗时: {(log.elapsed_ms / 1000).toFixed(1)}秒
+                                </span>
+                              )}
                             </div>
-                            <div className="p-3 bg-destructive/10 space-y-1.5">
-                              <p className="text-xs font-mono break-all text-destructive">{parsed.coreMessage}</p>
-                              {(parsed.elapsed || parsed.timestamp) && (
-                                <div className="flex gap-3 text-[10px] text-muted-foreground pt-1 border-t border-destructive/10">
-                                  {parsed.elapsed && <span>耗时: {parsed.elapsed}</span>}
-                                  {parsed.timestamp && <span>时间: {parsed.timestamp}</span>}
+                            <div className={`p-3 space-y-1.5 ${isSuccess ? 'bg-green-50/50' : isPending ? 'bg-yellow-50/50' : 'bg-destructive/10'}`}>
+                              {requestParams && (
+                                <div className="flex gap-2 text-[10px] text-muted-foreground flex-wrap">
+                                  {requestParams.model && <span>模型: {requestParams.model}</span>}
+                                  {requestParams.format && <span>格式: {requestParams.format}</span>}
+                                  {requestParams.size && <span>尺寸: {requestParams.size}</span>}
                                 </div>
                               )}
-                              {parsed.rawResponse && (
-                                <div className="pt-1.5 border-t border-destructive/10">
-                                  <p className="text-[10px] text-muted-foreground mb-0.5">API 原始响应</p>
-                                  <pre className="text-[10px] font-mono break-all text-destructive/80 whitespace-pre-wrap max-h-24 overflow-y-auto">{parsed.rawResponse}</pre>
-                                </div>
+                              {isSuccess && log.response_summary && (() => {
+                                try {
+                                  const summary = JSON.parse(log.response_summary)
+                                  return <p className="text-xs text-green-700">生成 {summary.imageCount} 张图片</p>
+                                } catch { return null }
+                              })()}
+                              {log.error_message && (
+                                <p className="text-xs font-mono break-all text-destructive">{log.error_message}</p>
                               )}
+                              <div className="text-[10px] text-muted-foreground pt-1 border-t border-current/10">
+                                {new Date(log.created_at).toLocaleString('zh-CN')}
+                              </div>
                             </div>
                           </div>
                         )
                       })}
-                      {!selectedTask.error_message && retryErrors.length === 0 && null}
                     </div>
                   </div>
                 )
               })()}
-
-              {selectedTask.error_message && !Array.isArray(selectedTask.retry_errors) && (
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium text-foreground">错误信息</Label>
-                  <div className="rounded-lg border border-destructive/20 overflow-hidden">
-                    <div className="p-3 bg-destructive/10">
-                      {(() => {
-                        const parsed = parseErrorMessage(selectedTask.error_message)
-                        const isTimeout = parsed.errorType === '请求超时'
-                        return (
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <Badge variant={isTimeout ? 'secondary' : 'destructive'} className={isTimeout ? 'bg-orange-500 hover:bg-orange-600 text-xs' : 'text-xs'}>
-                                {parsed.errorType}
-                              </Badge>
-                              {parsed.retryInfo && (
-                                <Badge variant="outline" className="text-muted-foreground text-xs">
-                                  {parsed.retryInfo}
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="text-xs font-mono break-all text-destructive">{parsed.coreMessage}</p>
-                            {(parsed.elapsed || parsed.timestamp) && (
-                              <div className="flex gap-3 text-xs text-muted-foreground pt-1 border-t border-destructive/10">
-                                {parsed.elapsed && <span>耗时: {parsed.elapsed}</span>}
-                                {parsed.timestamp && <span>时间: {parsed.timestamp}</span>}
-                              </div>
-                            )}
-                            {parsed.rawResponse && (
-                              <div className="pt-2 border-t border-destructive/10">
-                                <p className="text-xs text-muted-foreground mb-1">API 原始响应</p>
-                                <pre className="text-xs font-mono break-all text-destructive/80 whitespace-pre-wrap max-h-32 overflow-y-auto">{parsed.rawResponse}</pre>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div className="space-y-2">
                 <Label className="text-sm font-medium text-foreground">时间信息</Label>

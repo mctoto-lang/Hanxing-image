@@ -341,14 +341,21 @@ adminRouter.get('/logs/tasks/:id', authMiddleware, adminMiddleware, async (req: 
       `SELECT t.*, u.username, m.display_name as model_name
        FROM generation_tasks t
        JOIN users u ON t.user_id = u.id
-       JOIN models m ON t.model_id = m.id
+       LEFT JOIN models m ON t.model_id = m.id
        WHERE t.id = ?`,
       [req.params.id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: '任务不存在' });
     }
-    return res.json({ task: result.rows[0] });
+    // 获取 API 调用记录
+    const callLogs = query(
+      'SELECT * FROM api_call_logs WHERE task_id = ? ORDER BY call_index ASC',
+      [req.params.id]
+    );
+    const task = result.rows[0];
+    task.api_call_logs = callLogs.rows;
+    return res.json({ task });
   } catch {
     return res.status(500).json({ error: '获取任务详情失败' });
   }

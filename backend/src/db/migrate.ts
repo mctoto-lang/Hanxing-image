@@ -210,6 +210,31 @@ export function migrate() {
     db.exec("ALTER TABLE models ADD COLUMN extra_config TEXT DEFAULT '{}'");
     console.log('已添加 extra_config 字段到 models');
   }
+  if (!modelColNames.has('api_timeout')) {
+    db.exec("ALTER TABLE models ADD COLUMN api_timeout INTEGER NOT NULL DEFAULT 120");
+    console.log('已添加 api_timeout 字段到 models');
+  }
+  if (!modelColNames.has('task_timeout')) {
+    db.exec("ALTER TABLE models ADD COLUMN task_timeout INTEGER NOT NULL DEFAULT 0");
+    console.log('已添加 task_timeout 字段到 models');
+  }
+
+  // API 调用记录表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS api_call_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES generation_tasks(id),
+      call_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT,
+      request_params TEXT,
+      response_summary TEXT,
+      elapsed_ms INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_call_logs_task_id ON api_call_logs(task_id);
+  `);
+  console.log('已创建 api_call_logs 表');
 
   try {
     const createSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='models'").get() as { sql: string } | undefined;
@@ -226,15 +251,31 @@ export function migrate() {
           api_key_encrypted TEXT,
           cost_per_image INTEGER NOT NULL DEFAULT 1,
           max_concurrent INTEGER NOT NULL DEFAULT 5,
+          max_retries INTEGER NOT NULL DEFAULT 3,
+          api_timeout INTEGER NOT NULL DEFAULT 120,
+          task_timeout INTEGER NOT NULL DEFAULT 0,
           is_active INTEGER DEFAULT 1,
           icon_url TEXT,
           supported_sizes TEXT,
+          visible_in_generate INTEGER NOT NULL DEFAULT 1,
+          visible_in_canvas INTEGER NOT NULL DEFAULT 1,
+          supports_reference_image INTEGER NOT NULL DEFAULT 0,
+          max_reference_images INTEGER NOT NULL DEFAULT 1,
+          reference_image_field TEXT DEFAULT 'image_url',
+          api_format TEXT NOT NULL DEFAULT 'openai',
+          extra_config TEXT DEFAULT '{}',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(name, api_endpoint)
         );
       `);
-      db.exec(`INSERT INTO models_new (id, name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, is_active, icon_url, supported_sizes, created_at, updated_at) SELECT id, name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, is_active, icon_url, supported_sizes, created_at, updated_at FROM models`);
+      // 动态检测旧表和新表共有的列，确保数据不丢失
+      const oldModelCols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
+      const oldModelColNames = oldModelCols.map(c => c.name);
+      const allNewCols = ['id', 'name', 'display_name', 'api_endpoint', 'api_key_encrypted', 'cost_per_image', 'max_concurrent', 'max_retries', 'api_timeout', 'task_timeout', 'is_active', 'icon_url', 'supported_sizes', 'visible_in_generate', 'visible_in_canvas', 'supports_reference_image', 'max_reference_images', 'reference_image_field', 'api_format', 'extra_config', 'created_at', 'updated_at'];
+      const commonCols = allNewCols.filter(c => oldModelColNames.includes(c));
+      const colList = commonCols.join(', ');
+      db.exec(`INSERT INTO models_new (${colList}) SELECT ${colList} FROM models`);
       db.exec(`DROP TABLE models`);
       db.exec(`ALTER TABLE models_new RENAME TO models`);
       db.pragma('foreign_keys = ON');

@@ -41,7 +41,7 @@ modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
     }
 
     const result = query(
-      `SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, api_format, extra_config FROM models ${whereClause} ORDER BY id`
+      `SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, api_format, extra_config FROM models ${whereClause} ORDER BY id`
     );
 
     // 根据用户权限组过滤模型
@@ -68,7 +68,7 @@ modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
 modelRouter.get('/all', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
   try {
     const result = query(
-      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models ORDER BY id'
+      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models ORDER BY id'
     );
     return res.json({ models: result.rows });
   } catch {
@@ -78,13 +78,13 @@ modelRouter.get('/all', authMiddleware, adminMiddleware, async (_req: AuthReques
 
 modelRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
+    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
     const insertResult = query(
-      'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, display_name, api_endpoint, api_key, cost_per_image || 1, max_concurrent || 5, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}']
+      'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, display_name, api_endpoint, api_key, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}']
     );
     const result = query(
-      'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
+      'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
       [insertResult.lastInsertRowid]
     );
     return res.status(201).json({ model: result.rows[0] });
@@ -98,7 +98,7 @@ modelRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, 
 
 modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, is_active, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
+    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
     
     const updateFields: string[] = [];
     const updateValues: any[] = [];
@@ -109,6 +109,9 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
     if (api_key !== undefined && api_key !== '') { updateFields.push('api_key_encrypted = ?'); updateValues.push(api_key); }
     if (cost_per_image !== undefined) { updateFields.push('cost_per_image = ?'); updateValues.push(cost_per_image); }
     if (max_concurrent !== undefined) { updateFields.push('max_concurrent = ?'); updateValues.push(max_concurrent); }
+    if (max_retries !== undefined) { updateFields.push('max_retries = ?'); updateValues.push(max_retries); }
+    if (api_timeout !== undefined) { updateFields.push('api_timeout = ?'); updateValues.push(api_timeout); }
+    if (task_timeout !== undefined) { updateFields.push('task_timeout = ?'); updateValues.push(task_timeout); }
     if (is_active !== undefined) { updateFields.push('is_active = ?'); updateValues.push(is_active); }
     if (icon_url !== undefined) { updateFields.push('icon_url = ?'); updateValues.push(icon_url); }
     if (supported_sizes !== undefined) { updateFields.push('supported_sizes = ?'); updateValues.push(supported_sizes); }
@@ -132,7 +135,7 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
       updateValues
     );
     const result = query(
-      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
+      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
       [req.params.id]
     );
     if (result.rows.length === 0) {
@@ -146,7 +149,19 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
 
 modelRouter.delete('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
   try {
-    const result = query('DELETE FROM models WHERE id = ?', [req.params.id]);
+    const modelId = req.params.id;
+    // 检查是否有关联的生成任务
+    const taskCheck = query('SELECT COUNT(*) as count FROM generation_tasks WHERE model_id = ?', [modelId]);
+    const taskCount = taskCheck.rows[0]?.count || 0;
+
+    if (taskCount > 0) {
+      // 有关联任务，使用软删除（标记为不活跃）
+      query('UPDATE models SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [modelId]);
+      return res.json({ message: '模型已停用（存在关联任务，已改为软删除）', softDelete: true });
+    }
+
+    // 无关联任务，直接删除
+    const result = query('DELETE FROM models WHERE id = ?', [modelId]);
     if (result.changes === 0) {
       return res.status(404).json({ error: '模型不存在' });
     }

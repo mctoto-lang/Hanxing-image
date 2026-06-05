@@ -14,6 +14,7 @@ interface Task {
   credits_type: string;
   retry_count: number;
   reference_images?: string;
+  started_at?: string;
 }
 
 interface ExtraConfig {
@@ -29,7 +30,7 @@ interface ExtraConfig {
 }
 
 const DEFAULT_MAX_RETRIES = 3;
-const API_TIMEOUT_MS = 120000;
+const DEFAULT_API_TIMEOUT_MS = 120000;
 const MJ_POLL_INTERVAL_MS = 5000;  // Midjourney 轮询间隔
 const MJ_MAX_POLL_TIME_MS = 300000; // Midjourney 最大轮询时间 5分钟
 
@@ -53,10 +54,10 @@ function sizeToWidth(size: string): number {
 class TaskQueue {
   private processing = false;
   private activeCount = 0;
-  private maxGlobalConcurrent = 10;
+  private maxGlobalConcurrent = 50; // 全局安全上限，实际由模型级 max_concurrent 控制
 
   addTask(task: Task) {
-    console.log(`[队列] 任务 #${task.id} 已加入队列 (优先级: ${task.priority})`);
+    console.log(`[队列] 任务 #${task.id} 已加入队列 (优先级: ${task.priority}, 模型: ${task.model_id})`);
     this.processQueue();
   }
 
@@ -69,6 +70,7 @@ class TaskQueue {
       if (!nextTask) break;
 
       this.activeCount++;
+      console.log(`[队列] 开始执行任务 #${nextTask.id} | 全局并发: ${this.activeCount}/${this.maxGlobalConcurrent}`);
       this.executeTask(nextTask).finally(() => {
         this.activeCount--;
         this.processQueue();
@@ -79,12 +81,45 @@ class TaskQueue {
   }
 
   private getNextTask(): Task | null {
+    // 查询所有有排队任务的模型及其当前并发状态
+    const modelStatusResult = query(
+      `SELECT m.id, m.name, m.max_concurrent,
+        (SELECT COUNT(*) FROM generation_tasks t2 WHERE t2.model_id = m.id AND t2.status = 'processing') as active_count
+       FROM models m
+       WHERE m.is_active = 1
+       AND EXISTS (SELECT 1 FROM generation_tasks t3 WHERE t3.model_id = m.id AND t3.status = 'queued')`
+    );
+
+    // 找出有可用并发槽位的模型ID列表
+    const availableModelIds: number[] = [];
+    for (const ms of modelStatusResult.rows) {
+      const active = ms.active_count || 0;
+      const max = ms.max_concurrent || 5;
+      if (active < max) {
+        availableModelIds.push(ms.id);
+        if (active > 0) {
+          console.log(`[队列] 模型 "${ms.name}" 并发: ${active}/${max} (可用)`);
+        }
+      } else {
+        console.log(`[队列] 模型 "${ms.name}" 并发已满: ${active}/${max} (跳过)`);
+      }
+    }
+
+    if (availableModelIds.length === 0) {
+      return null;
+    }
+
+    // 从有可用槽位的模型中，按优先级选取下一个任务
+    const placeholders = availableModelIds.map(() => '?').join(',');
     const result = query(
       `SELECT t.* FROM generation_tasks t
        JOIN models m ON t.model_id = m.id
        WHERE t.status = 'queued'
+       AND m.is_active = 1
+       AND t.model_id IN (${placeholders})
        ORDER BY t.priority DESC, t.created_at ASC
-       LIMIT 1`
+       LIMIT 1`,
+      availableModelIds
     );
     return result.rows[0] || null;
   }
@@ -94,9 +129,43 @@ class TaskQueue {
     const modelResult = query('SELECT * FROM models WHERE id = ?', [task.model_id]);
     const model = modelResult.rows[0];
     const maxRetries = model?.max_retries ?? DEFAULT_MAX_RETRIES;
+    const apiTimeoutMs = (model?.api_timeout || 120) * 1000;
+    const taskTimeoutMs = (model?.task_timeout || 0) * 1000; // 0 表示不限制
+
+    // 计算当前是第几次调用
+    const callCountResult = query('SELECT COUNT(*) as count FROM api_call_logs WHERE task_id = ?', [task.id]);
+    const callIndex = (callCountResult.rows[0]?.count || 0) + 1;
+
+    // 检查任务总超时
+    if (taskTimeoutMs > 0 && task.started_at) {
+      const taskElapsed = Date.now() - new Date(task.started_at).getTime();
+      if (taskElapsed >= taskTimeoutMs) {
+        const errorMsg = `任务总超时(已等待 ${taskElapsed / 1000}秒，限制 ${taskTimeoutMs / 1000}秒)`;
+        query(
+          "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [errorMsg, task.id]
+        );
+        // 退还积分
+        if (task.credits_type === 'project') {
+          query('UPDATE users SET project_credits = project_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
+        } else {
+          query('UPDATE users SET creative_credits = creative_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
+        }
+        console.log(`[队列] 任务 #${task.id} 任务总超时: ${errorMsg}`);
+        return;
+      }
+    }
+
+    // 记录本次调用
+    const callLogResult = query(
+      'INSERT INTO api_call_logs (task_id, call_index, status, request_params, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
+      [task.id, callIndex, 'pending', JSON.stringify({ model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai' })]
+    );
+    const callLogId = callLogResult.lastInsertRowid;
+
     try {
       query(
-        "UPDATE generation_tasks SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "UPDATE generation_tasks SET status = 'processing', started_at = COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id = ?",
         [task.id]
       );
 
@@ -105,22 +174,35 @@ class TaskQueue {
       }
 
       const imageUrls = await this.callImageAPI(model, task);
+      const elapsed = Date.now() - startTime;
+
+      // 更新调用记录为成功
+      query(
+        "UPDATE api_call_logs SET status = 'success', response_summary = ?, elapsed_ms = ? WHERE id = ?",
+        [JSON.stringify({ imageCount: imageUrls.length }), elapsed, callLogId]
+      );
 
       query(
         "UPDATE generation_tasks SET status = 'completed', result_images = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
         [JSON.stringify(imageUrls), task.id]
       );
 
-      console.log(`[队列] 任务 #${task.id} 完成，生成 ${imageUrls.length} 张图片，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+      console.log(`[队列] 任务 #${task.id} 完成，生成 ${imageUrls.length} 张图片，耗时 ${(elapsed / 1000).toFixed(1)}秒`);
     } catch (err) {
       const rawMessage = (err as Error).message;
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const elapsed = Date.now() - startTime;
       const currentRetry = task.retry_count || 0;
       const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
       const isTimeout = rawMessage.includes('超时') || rawMessage.includes('timeout') || rawMessage.includes('aborted');
       const errorType = isTimeout ? '请求超时' : '请求失败';
-      const errorMessage = `[${errorType}] ${rawMessage} | 耗时: ${elapsed}秒 | 时间: ${timestamp}`;
+      const errorMessage = `[${errorType}] ${rawMessage} | 耗时: ${(elapsed / 1000).toFixed(1)}秒 | 时间: ${timestamp}`;
+
+      // 更新调用记录为失败
+      query(
+        "UPDATE api_call_logs SET status = 'failed', error_message = ?, elapsed_ms = ? WHERE id = ?",
+        [errorMessage, elapsed, callLogId]
+      );
 
       // 追加重试错误到 retry_errors
       const existingErrors: string[] = (() => {
@@ -138,7 +220,7 @@ class TaskQueue {
           "UPDATE generation_tasks SET status = 'queued', error_message = ?, retry_count = ?, retry_errors = ? WHERE id = ?",
           [errorMessage, newRetryCount, retryErrorsJson, task.id]
         );
-        console.log(`[队列] 任务 #${task.id} ${errorType} (重试 ${newRetryCount}/${maxRetries}): ${rawMessage}，耗时 ${elapsed}秒`);
+        console.log(`[队列] 任务 #${task.id} ${errorType} (重试 ${newRetryCount}/${maxRetries}): ${rawMessage}，耗时 ${(elapsed / 1000).toFixed(1)}秒`);
       } else {
         const finalError = `${errorMessage} | 已重试${maxRetries}次均失败`;
         query(
@@ -157,7 +239,7 @@ class TaskQueue {
           );
         }
         const creditsTypeName = task.credits_type === 'project' ? '项目' : '创作';
-        console.log(`[队列] 任务 #${task.id} 最终失败 (${errorType}，已重试${maxRetries}次): ${rawMessage}，耗时 ${elapsed}秒，已退还 ${task.credits_charged} ${creditsTypeName}积分`);
+        console.log(`[队列] 任务 #${task.id} 最终失败 (${errorType}，已重试${maxRetries}次): ${rawMessage}，耗时 ${(elapsed / 1000).toFixed(1)}秒，已退还 ${task.credits_charged} ${creditsTypeName}积分`);
       }
     }
   }
@@ -225,10 +307,10 @@ class TaskQueue {
     const endpoint = this.resolveEndpoint(model.api_endpoint, hasReferenceImages);
 
     for (let i = 0; i < task.image_count; i++) {
-      console.log(`[OpenAI] 请求 ${endpoint} | model=${model.name} | size=${task.image_size} | quality=${extraConfig.quality || 'default'} | 超时=${API_TIMEOUT_MS / 1000}秒`);
+      console.log(`[OpenAI] 请求 ${endpoint} | model=${model.name} | size=${task.image_size} | quality=${extraConfig.quality || 'default'} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
 
       const requestBody: Record<string, unknown> = {
         model: model.name,
@@ -254,7 +336,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller);
+      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -282,10 +364,10 @@ class TaskQueue {
     const imageSize = sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
-      console.log(`[Gemini] 请求 ${endpoint} | model=${model.name} | image_size=${imageSize} | 超时=${API_TIMEOUT_MS / 1000}秒`);
+      console.log(`[Gemini] 请求 ${endpoint} | model=${model.name} | image_size=${imageSize} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
 
       const requestBody: Record<string, unknown> = {
         prompt: task.prompt,
@@ -305,7 +387,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller);
+      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -360,7 +442,7 @@ class TaskQueue {
       console.log(`[MJ] 提交任务 ${submitEndpoint} | prompt=${mjPrompt.slice(0, 50)}... | mode=${mjMode}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
 
       const requestBody: Record<string, unknown> = {
         prompt: mjPrompt,
@@ -378,7 +460,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller);
+      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -494,10 +576,10 @@ class TaskQueue {
     const aspectRatio = extraConfig.aspect_ratio || sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
-      console.log(`[GRS] 请求 ${endpoint} | model=${model.name} | aspectRatio=${aspectRatio} | replyType=${replyType} | 超时=${API_TIMEOUT_MS / 1000}秒`);
+      console.log(`[GRS] 请求 ${endpoint} | model=${model.name} | aspectRatio=${aspectRatio} | replyType=${replyType} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
 
       const requestBody: Record<string, unknown> = {
         model: model.name,
@@ -522,7 +604,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller);
+      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -666,7 +748,7 @@ class TaskQueue {
       console.log(`[云雾MJ] 提交任务 ${submitEndpoint} | prompt=${mjPrompt.slice(0, 50)}... | botType=${botType}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
 
       const requestBody: Record<string, unknown> = {
         prompt: mjPrompt,
@@ -685,7 +767,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller);
+      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -794,7 +876,8 @@ class TaskQueue {
     endpoint: string,
     apiKey: string,
     body: Record<string, unknown>,
-    controller: AbortController
+    controller: AbortController,
+    timeoutMs?: number
   ): Promise<Response> {
     try {
       const response = await fetch(endpoint, {
@@ -809,7 +892,8 @@ class TaskQueue {
       return response;
     } catch (fetchErr) {
       if ((fetchErr as Error).name === 'AbortError') {
-        throw new Error(`API请求超时(已等待${API_TIMEOUT_MS / 1000}秒)，请检查API服务状态或稍后重试`);
+        const timeout = timeoutMs || DEFAULT_API_TIMEOUT_MS;
+        throw new Error(`API请求超时(已等待${timeout / 1000}秒)，请检查API服务状态或稍后重试`);
       }
       throw new Error(`API请求网络错误: ${(fetchErr as Error).message}`);
     }

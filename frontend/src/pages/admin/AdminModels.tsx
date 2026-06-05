@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Trash2, ArrowUpDown, MoreHorizontal, X } from 'lucide-react'
+import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Clock, Trash2, ArrowUpDown, MoreHorizontal, X } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +36,8 @@ interface Model {
   cost_per_image: number
   max_concurrent: number
   max_retries: number
+  api_timeout: number
+  task_timeout: number
   is_active: boolean
   visible_in_generate: boolean
   visible_in_canvas: boolean
@@ -66,6 +68,8 @@ const emptyForm = {
   cost_per_image: '1',
   max_concurrent: '5',
   max_retries: '3',
+  api_timeout: '120',
+  task_timeout: '0',
   visible_in_generate: true,
   visible_in_canvas: true,
   supports_reference_image: false,
@@ -131,6 +135,8 @@ export default function AdminModels() {
       cost_per_image: String(model.cost_per_image),
       max_concurrent: String(model.max_concurrent),
       max_retries: String(model.max_retries ?? 3),
+      api_timeout: String(model.api_timeout ?? 120),
+      task_timeout: String(model.task_timeout ?? 0),
       visible_in_generate: model.visible_in_generate !== false,
       visible_in_canvas: model.visible_in_canvas !== false,
       supports_reference_image: !!model.supports_reference_image,
@@ -209,6 +215,8 @@ export default function AdminModels() {
         cost_per_image: parseInt(form.cost_per_image),
         max_concurrent: parseInt(form.max_concurrent),
         max_retries: parseInt(form.max_retries) || 3,
+        api_timeout: parseInt(form.api_timeout) || 120,
+        task_timeout: parseInt(form.task_timeout) || 0,
         visible_in_generate: form.visible_in_generate,
         visible_in_canvas: form.visible_in_canvas,
         supports_reference_image: form.supports_reference_image,
@@ -276,6 +284,12 @@ export default function AdminModels() {
         const data = await res.json()
         toast.error(data.error || '删除失败')
         return
+      }
+      const data = await res.json()
+      if (data.softDelete) {
+        toast.success('模型已停用（存在关联任务，已改为软删除）')
+      } else {
+        toast.success('模型已删除')
       }
       setDeleteConfirmOpen(false)
       setDeletingModel(null)
@@ -724,6 +738,36 @@ export default function AdminModels() {
                   value={form.max_retries}
                   onChange={(e) => setForm({ ...form, max_retries: e.target.value })}
                 />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="api_timeout" className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                  单次请求超时(秒)
+                </Label>
+                <Input
+                  id="api_timeout"
+                  type="number"
+                  min="10"
+                  max="600"
+                  value={form.api_timeout}
+                  onChange={(e) => setForm({ ...form, api_timeout: e.target.value })}
+                />
+                <p className="text-[11px] text-muted-foreground">单次API请求的最大等待时间，超时则判定为失败。默认120秒</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="task_timeout" className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                  任务总超时(秒)
+                </Label>
+                <Input
+                  id="task_timeout"
+                  type="number"
+                  min="0"
+                  max="3600"
+                  value={form.task_timeout}
+                  onChange={(e) => setForm({ ...form, task_timeout: e.target.value })}
+                />
+                <p className="text-[11px] text-muted-foreground">任务总等待时间（含所有重试），0表示不限制。适用于Midjourney等长时间任务</p>
               </div>
             </div>
 
