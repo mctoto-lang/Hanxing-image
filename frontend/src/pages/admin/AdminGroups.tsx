@@ -28,6 +28,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { toast } from 'sonner'
 
 interface Group {
   id: number
@@ -134,7 +135,7 @@ export default function AdminGroups() {
         ? `/api/admin/groups/${editingGroup.id}`
         : '/api/admin/groups'
 
-      await fetch(url, {
+      const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -149,11 +150,18 @@ export default function AdminGroups() {
           allowed_models: form.allowed_models,
         }),
       })
+      if (!res.ok) {
+        const data = await res.json()
+        toast.error(data.error || '保存失败')
+        return
+      }
       setDialogOpen(false)
       setEditingGroup(null)
       setForm(emptyForm)
       fetchGroups()
-    } catch {}
+    } catch {
+      toast.error('网络错误，请重试')
+    }
   }
 
   const columns: ColumnDef<Group, unknown>[] = useMemo(() => [

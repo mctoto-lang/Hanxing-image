@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Clock, Trash2, ArrowUpDown, MoreHorizontal, X } from 'lucide-react'
+import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Clock, Trash2, ArrowUpDown, MoreHorizontal, X, Power, PowerOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -282,17 +282,33 @@ export default function AdminModels() {
       })
       if (!res.ok) {
         const data = await res.json()
-        toast.error(data.error || '删除失败')
+        toast.error(data.error || '禁用失败')
         return
       }
-      const data = await res.json()
-      if (data.softDelete) {
-        toast.success('模型已停用（存在关联任务，已改为软删除）')
-      } else {
-        toast.success('模型已删除')
-      }
+      toast.success('模型已禁用')
       setDeleteConfirmOpen(false)
       setDeletingModel(null)
+      fetchModels()
+    } catch {
+      toast.error('网络错误，请重试')
+    }
+  }
+
+  const toggleModelActive = async (model: Model) => {
+    try {
+      const token = localStorage.getItem('token')
+      const newActive = !model.is_active
+      const res = await fetch(`/api/models/${model.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ is_active: newActive }),
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        toast.error(data.error || '操作失败')
+        return
+      }
+      toast.success(newActive ? '模型已启用' : '模型已禁用')
       fetchModels()
     } catch {
       toast.error('网络错误，请重试')
@@ -443,6 +459,19 @@ export default function AdminModels() {
               <DropdownMenuItem onClick={() => openEditDialog(model)}>
                 <Pencil className="mr-2 h-4 w-4" />
                 编辑模型
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => toggleModelActive(model)}>
+                {model.is_active ? (
+                  <>
+                    <PowerOff className="mr-2 h-4 w-4" />
+                    禁用模型
+                  </>
+                ) : (
+                  <>
+                    <Power className="mr-2 h-4 w-4" />
+                    启用模型
+                  </>
+                )}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -948,7 +977,7 @@ export default function AdminModels() {
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
             <DialogDescription>
-              确定要删除模型「{deletingModel?.display_name || deletingModel?.name}」吗？此操作不可撤销。
+              确定要删除模型「{deletingModel?.display_name || deletingModel?.name}」吗？删除后模型将被禁用，可通过启用功能恢复。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

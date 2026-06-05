@@ -38,6 +38,9 @@ function parseJsonFields(row: any): any {
 function normalizeParams(params?: unknown[]): unknown[] {
   if (!params) return [];
   return params.map((value) => {
+    if (typeof value === 'boolean') {
+      return value ? 1 : 0;
+    }
     if (value && typeof value === 'object') {
       return JSON.stringify(value);
     }

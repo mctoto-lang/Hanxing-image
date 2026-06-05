@@ -150,24 +150,14 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
 modelRouter.delete('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
   try {
     const modelId = req.params.id;
-    // 检查是否有关联的生成任务
-    const taskCheck = query('SELECT COUNT(*) as count FROM generation_tasks WHERE model_id = ?', [modelId]);
-    const taskCount = taskCheck.rows[0]?.count || 0;
-
-    if (taskCount > 0) {
-      // 有关联任务，使用软删除（标记为不活跃）
-      query('UPDATE models SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [modelId]);
-      return res.json({ message: '模型已停用（存在关联任务，已改为软删除）', softDelete: true });
-    }
-
-    // 无关联任务，直接删除
-    const result = query('DELETE FROM models WHERE id = ?', [modelId]);
+    // 始终软删除（禁用模型），保留数据完整性
+    const result = query('UPDATE models SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [modelId]);
     if (result.changes === 0) {
       return res.status(404).json({ error: '模型不存在' });
     }
-    return res.json({ message: '模型已删除' });
+    return res.json({ message: '模型已禁用' });
   } catch {
-    return res.status(500).json({ error: '删除模型失败' });
+    return res.status(500).json({ error: '禁用模型失败' });
   }
 });
 

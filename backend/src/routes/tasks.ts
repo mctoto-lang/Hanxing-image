@@ -127,7 +127,7 @@ taskRouter.get('/history', authMiddleware, async (req: AuthRequest, res) => {
 
     const result = query(
       `SELECT t.*, m.display_name as model_name
-       FROM generation_tasks t JOIN models m ON t.model_id = m.id
+       FROM generation_tasks t LEFT JOIN models m ON t.model_id = m.id
        ${whereClause}
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
@@ -204,7 +204,7 @@ taskRouter.post('/:id/retry', authMiddleware, async (req: AuthRequest, res) => {
     }
 
     query(
-      "UPDATE generation_tasks SET status = 'queued', error_message = NULL, retry_count = 0, result_images = '[]', started_at = NULL, completed_at = NULL, task_uuid = ? WHERE id = ?",
+      "UPDATE generation_tasks SET status = 'queued', error_message = NULL, retry_count = 0, retry_errors = '[]', result_images = '[]', started_at = NULL, completed_at = NULL, task_uuid = ? WHERE id = ?",
       [crypto.randomUUID(), task.id]
     );
 

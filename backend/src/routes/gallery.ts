@@ -7,10 +7,10 @@ export const galleryRouter = Router();
 galleryRouter.get('/', authMiddleware, async (_req: AuthRequest, res) => {
   try {
     const result = query(
-      `SELECT g.image_url, t.prompt, m.display_name as model_name, u.username
+      `SELECT g.image_url, t.prompt, m.display_name as model_name, u.username, t.completed_at as generation_time
        FROM gallery g
        JOIN generation_tasks t ON g.task_id = t.id
-       JOIN models m ON t.model_id = m.id
+       LEFT JOIN models m ON t.model_id = m.id
        JOIN users u ON t.user_id = u.id
        WHERE g.is_public = true
        ORDER BY g.created_at DESC`

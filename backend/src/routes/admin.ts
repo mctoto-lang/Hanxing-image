@@ -246,6 +246,12 @@ adminRouter.put('/groups/:id', authMiddleware, adminMiddleware, async (req: Auth
 
 adminRouter.delete('/groups/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
   try {
+    // 检查是否有用户在该权限组中
+    const userCheck = query('SELECT COUNT(*) as count FROM users WHERE group_id = ?', [req.params.id]);
+    const userCount = userCheck.rows[0]?.count || 0;
+    if (userCount > 0) {
+      return res.status(400).json({ error: `该权限组下有 ${userCount} 个用户，请先将用户移至其他权限组` });
+    }
     const result = query('DELETE FROM permission_groups WHERE id = ?', [req.params.id]);
     if (result.changes === 0) {
       return res.status(404).json({ error: '权限组不存在' });
@@ -286,7 +292,7 @@ adminRouter.get('/images', authMiddleware, adminMiddleware, async (req: AuthRequ
        u.username, m.display_name as model_name
        FROM generation_tasks t
        JOIN users u ON t.user_id = u.id
-       JOIN models m ON t.model_id = m.id
+       LEFT JOIN models m ON t.model_id = m.id
        ${whereClause}
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
@@ -325,7 +331,7 @@ adminRouter.get('/logs/tasks', authMiddleware, adminMiddleware, async (req: Auth
        u.username, m.display_name as model_name
        FROM generation_tasks t
        JOIN users u ON t.user_id = u.id
-       JOIN models m ON t.model_id = m.id
+       LEFT JOIN models m ON t.model_id = m.id
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
@@ -379,6 +385,7 @@ adminRouter.delete('/logs/tasks/:id', authMiddleware, adminMiddleware, async (re
       }
     }
 
+    query('DELETE FROM api_call_logs WHERE task_id = ?', [taskId]);
     query('DELETE FROM gallery WHERE task_id = ?', [taskId]);
     query('DELETE FROM generation_tasks WHERE id = ?', [taskId]);
 
@@ -399,18 +406,24 @@ adminRouter.post('/gallery/:taskId/toggle', authMiddleware, adminMiddleware, asy
     if (!images || images.length === 0) {
       return res.status(400).json({ error: '该任务没有生成的图片' });
     }
-    for (const imageUrl of images) {
-      const existing = query(
-        'SELECT * FROM gallery WHERE task_id = ? AND image_url = ?',
-        [task.id, imageUrl]
-      );
-      if (existing.rows.length > 0) {
+    // 检查是否所有图片都已在画廊中
+    const allInGallery = images.every((imageUrl: string) => {
+      const existing = query('SELECT * FROM gallery WHERE task_id = ? AND image_url = ?', [task.id, imageUrl]);
+      return existing.rows.length > 0;
+    });
+
+    if (allInGallery) {
+      // 全部移除
+      for (const imageUrl of images) {
         query('DELETE FROM gallery WHERE task_id = ? AND image_url = ?', [task.id, imageUrl]);
-      } else {
-        query('INSERT INTO gallery (task_id, image_url, is_public) VALUES (?, ?, true)', [task.id, imageUrl]);
+      }
+    } else {
+      // 全部添加
+      for (const imageUrl of images) {
+        query('INSERT OR IGNORE INTO gallery (task_id, image_url, is_public) VALUES (?, ?, true)', [task.id, imageUrl]);
       }
     }
-    return res.json({ message: '画廊状态已更新' });
+    return res.json({ message: '画廊状态已更新', inGallery: !allInGallery });
   } catch {
     return res.status(500).json({ error: '更新画廊状态失败' });
   }
