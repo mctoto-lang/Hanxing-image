@@ -202,6 +202,14 @@ export function migrate() {
     db.exec("ALTER TABLE models ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3");
     console.log('已添加 max_retries 字段到 models');
   }
+  if (!modelColNames.has('api_format')) {
+    db.exec("ALTER TABLE models ADD COLUMN api_format TEXT NOT NULL DEFAULT 'openai'");
+    console.log('已添加 api_format 字段到 models');
+  }
+  if (!modelColNames.has('extra_config')) {
+    db.exec("ALTER TABLE models ADD COLUMN extra_config TEXT DEFAULT '{}'");
+    console.log('已添加 extra_config 字段到 models');
+  }
 
   try {
     const createSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='models'").get() as { sql: string } | undefined;

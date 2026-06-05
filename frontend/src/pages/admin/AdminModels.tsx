@@ -42,6 +42,8 @@ interface Model {
   supports_reference_image: boolean
   max_reference_images: number
   reference_image_field: string
+  api_format: 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj'
+  extra_config: string
 }
 
 const DEFAULT_SIZES = JSON.stringify({
@@ -69,6 +71,16 @@ const emptyForm = {
   supports_reference_image: false,
   max_reference_images: '1',
   reference_image_field: 'image_url',
+  api_format: 'openai' as 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj',
+  quality: '',
+  mj_mode: 'fast',
+  mj_version: '',
+  // GRS 格式
+  reply_type: 'json',
+  aspect_ratio: '',
+  image_size_grs: '',
+  // 云雾 MJ 格式
+  bot_type: 'MID_JOURNEY',
 }
 
 export default function AdminModels() {
@@ -103,6 +115,11 @@ export default function AdminModels() {
   }
 
   const openEditDialog = (model: Model) => {
+    const extraConfig = (() => {
+      try {
+        return JSON.parse(model.extra_config || '{}')
+      } catch { return {} }
+    })()
     setEditingModel(model)
     setForm({
       name: model.name,
@@ -119,6 +136,16 @@ export default function AdminModels() {
       supports_reference_image: !!model.supports_reference_image,
       max_reference_images: String(model.max_reference_images || 1),
       reference_image_field: model.reference_image_field || 'image_url',
+      api_format: model.api_format || 'openai',
+      quality: extraConfig.quality || '',
+      mj_mode: extraConfig.mj_mode || 'fast',
+      mj_version: extraConfig.mj_version || '',
+      // GRS 格式
+      reply_type: extraConfig.reply_type || 'json',
+      aspect_ratio: extraConfig.aspect_ratio || '',
+      image_size_grs: extraConfig.image_size_grs || '',
+      // 云雾 MJ 格式
+      bot_type: extraConfig.bot_type || 'MID_JOURNEY',
     })
     setDialogOpen(true)
   }
@@ -155,6 +182,25 @@ export default function AdminModels() {
         ? `/api/models/${editingModel.id}`
         : '/api/models'
 
+      // 构建 extra_config
+      const extraConfig: Record<string, string> = {}
+      if (form.api_format === 'openai' && form.quality) {
+        extraConfig.quality = form.quality
+      }
+      if (form.api_format === 'midjourney') {
+        if (form.mj_mode) extraConfig.mj_mode = form.mj_mode
+        if (form.mj_version) extraConfig.mj_version = form.mj_version
+      }
+      if (form.api_format === 'grs') {
+        if (form.reply_type) extraConfig.reply_type = form.reply_type
+        if (form.aspect_ratio) extraConfig.aspect_ratio = form.aspect_ratio
+        if (form.image_size_grs) extraConfig.image_size_grs = form.image_size_grs
+      }
+      if (form.api_format === 'yunwu_mj') {
+        if (form.bot_type) extraConfig.bot_type = form.bot_type
+        if (form.mj_version) extraConfig.mj_version = form.mj_version
+      }
+
       const body: Record<string, unknown> = {
         name: form.name,
         display_name: form.display_name,
@@ -168,6 +214,8 @@ export default function AdminModels() {
         supports_reference_image: form.supports_reference_image,
         max_reference_images: parseInt(form.max_reference_images) || 1,
         reference_image_field: form.reference_image_field || 'image_url',
+        api_format: form.api_format,
+        extra_config: JSON.stringify(extraConfig),
       }
 
       if (form.supported_sizes) {
@@ -284,6 +332,32 @@ export default function AdminModels() {
           {row.original.api_endpoint || '未配置'}
         </span>
       ),
+    },
+    {
+      accessorKey: 'api_format',
+      header: '接口格式',
+      cell: ({ row }) => {
+        const format = row.original.api_format || 'openai'
+        const formatLabels: Record<string, string> = {
+          openai: 'OpenAI',
+          gemini: 'Gemini',
+          midjourney: 'Midjourney',
+          grs: 'GRS中转站',
+          yunwu_mj: '云雾MJ',
+        }
+        const formatColors: Record<string, string> = {
+          openai: 'bg-green-50 text-green-600 border-green-200',
+          gemini: 'bg-blue-50 text-blue-600 border-blue-200',
+          midjourney: 'bg-purple-50 text-purple-600 border-purple-200',
+          grs: 'bg-orange-50 text-orange-600 border-orange-200',
+          yunwu_mj: 'bg-pink-50 text-pink-600 border-pink-200',
+        }
+        return (
+          <Badge variant="outline" className={`text-xs ${formatColors[format]}`}>
+            {formatLabels[format]}
+          </Badge>
+        )
+      },
     },
     {
       accessorKey: 'cost_per_image',
@@ -457,6 +531,158 @@ export default function AdminModels() {
                 onChange={(e) => setForm({ ...form, api_key: e.target.value })}
               />
             </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="api_format">API 接口格式</Label>
+              <select
+                id="api_format"
+                value={form.api_format}
+                onChange={(e) => setForm({ ...form, api_format: e.target.value as 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj' })}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="openai">OpenAI GPT Image 格式</option>
+                <option value="gemini">Gemini Nano Banana 格式</option>
+                <option value="midjourney">Midjourney 格式（标准中转站）</option>
+                <option value="grs">GRS 中转站格式</option>
+                <option value="yunwu_mj">云雾 Midjourney 格式</option>
+              </select>
+              <p className="text-[11px] text-muted-foreground">
+                {form.api_format === 'openai' && '标准 OpenAI 图片生成接口，支持 quality 参数'}
+                {form.api_format === 'gemini' && 'Gemini 简化格式，尺寸使用比例（如 16:9）'}
+                {form.api_format === 'midjourney' && '标准 MJ 中转站异步接口，支持 --ar --v 参数，需要轮询获取结果'}
+                {form.api_format === 'grs' && 'GRS 中转站统一格式（nano-banana / gpt-image-2），支持同步和异步模式'}
+                {form.api_format === 'yunwu_mj' && '云雾中转站 Midjourney 接口，支持 botType 切换 MJ/Niji'}
+              </p>
+            </div>
+
+            {/* OpenAI 特定配置 */}
+            {form.api_format === 'openai' && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="quality">图片质量 (quality)</Label>
+                <select
+                  id="quality"
+                  value={form.quality}
+                  onChange={(e) => setForm({ ...form, quality: e.target.value })}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">默认</option>
+                  <option value="low">low - 低质量（快速）</option>
+                  <option value="medium">medium - 中等质量</option>
+                  <option value="high">high - 高质量</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">控制生成图片的质量，高质量生成时间更长</p>
+              </div>
+            )}
+
+            {/* Midjourney 特定配置 */}
+            {form.api_format === 'midjourney' && (
+              <div className="grid grid-cols-[1fr_1fr] gap-4">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="mj_mode">生成模式 (mode)</Label>
+                  <select
+                    id="mj_mode"
+                    value={form.mj_mode}
+                    onChange={(e) => setForm({ ...form, mj_mode: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="fast">fast - 快速模式</option>
+                    <option value="relax">relax - 放松模式</option>
+                    <option value="turbo">turbo - 涡轮模式</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="mj_version">版本 (--v)</Label>
+                  <select
+                    id="mj_version"
+                    value={form.mj_version}
+                    onChange={(e) => setForm({ ...form, mj_version: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="">默认</option>
+                    <option value="5">v5</option>
+                    <option value="6">v6</option>
+                  </select>
+                </div>
+                <p className="text-[11px] text-muted-foreground col-span-2">尺寸比例会自动添加到 prompt 中（--ar 参数）</p>
+              </div>
+            )}
+
+            {/* GRS 中转站特定配置 */}
+            {form.api_format === 'grs' && (
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-[1fr_1fr] gap-4">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="reply_type">响应模式 (replyType)</Label>
+                    <select
+                      id="reply_type"
+                      value={form.reply_type}
+                      onChange={(e) => setForm({ ...form, reply_type: e.target.value })}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="json">json - 同步返回</option>
+                      <option value="async">async - 异步轮询</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="image_size_grs">分辨率 (imageSize)</Label>
+                    <select
+                      id="image_size_grs"
+                      value={form.image_size_grs}
+                      onChange={(e) => setForm({ ...form, image_size_grs: e.target.value })}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="">默认</option>
+                      <option value="1K">1K</option>
+                      <option value="2K">2K</option>
+                      <option value="4K">4K</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="aspect_ratio">宽高比 (aspectRatio)</Label>
+                  <Input
+                    id="aspect_ratio"
+                    placeholder="如 1:1 或 1024x1024，留空则自动转换"
+                    value={form.aspect_ratio}
+                    onChange={(e) => setForm({ ...form, aspect_ratio: e.target.value })}
+                  />
+                  <p className="text-[11px] text-muted-foreground">nano-banana 使用比例格式（如 1:1），gpt-image-2 使用像素格式（如 1024x1024）。留空则根据用户选择的尺寸自动转换</p>
+                </div>
+              </div>
+            )}
+
+            {/* 云雾 MJ 特定配置 */}
+            {form.api_format === 'yunwu_mj' && (
+              <div className="grid grid-cols-[1fr_1fr] gap-4">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="bot_type">Bot 类型 (botType)</Label>
+                  <select
+                    id="bot_type"
+                    value={form.bot_type}
+                    onChange={(e) => setForm({ ...form, bot_type: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="MID_JOURNEY">MID_JOURNEY - Midjourney</option>
+                    <option value="NIJI_JOURNEY">NIJI_JOURNEY - Niji Journey</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="mj_version_yunwu">版本 (--v)</Label>
+                  <select
+                    id="mj_version_yunwu"
+                    value={form.mj_version}
+                    onChange={(e) => setForm({ ...form, mj_version: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="">默认</option>
+                    <option value="5">v5</option>
+                    <option value="6">v6</option>
+                    <option value="6.1">v6.1</option>
+                  </select>
+                </div>
+                <p className="text-[11px] text-muted-foreground col-span-2">尺寸比例会自动添加到 prompt 中（--ar 参数），云雾MJ不支持mode参数</p>
+              </div>
+            )}
 
             <div className="grid grid-cols-[1fr_1fr_1fr] gap-4">
               <div className="flex flex-col gap-2">
