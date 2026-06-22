@@ -3,7 +3,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { query } from '../db/index.js';
-import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middleware/auth.js';
+import { encrypt } from '../services/crypto.js';
 
 export const modelRouter = Router();
 
@@ -65,7 +66,7 @@ modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-modelRouter.get('/all', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+modelRouter.get('/all', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query(
       'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models ORDER BY id'
@@ -76,12 +77,12 @@ modelRouter.get('/all', authMiddleware, adminMiddleware, async (_req: AuthReques
   }
 });
 
-modelRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+modelRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
     const insertResult = query(
       'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, display_name, api_endpoint, api_key, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}']
+      [name, display_name, api_endpoint, api_key ? encrypt(api_key) : null, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}']
     );
     const result = query(
       'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
@@ -96,7 +97,7 @@ modelRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, 
   }
 });
 
-modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+modelRouter.put('/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config } = req.body;
     
@@ -106,7 +107,7 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
     if (name !== undefined) { updateFields.push('name = COALESCE(NULLIF(?, \'\'), name)'); updateValues.push(name); }
     if (display_name !== undefined) { updateFields.push('display_name = COALESCE(NULLIF(?, \'\'), display_name)'); updateValues.push(display_name); }
     if (api_endpoint !== undefined) { updateFields.push('api_endpoint = COALESCE(NULLIF(?, \'\'), api_endpoint)'); updateValues.push(api_endpoint); }
-    if (api_key !== undefined && api_key !== '') { updateFields.push('api_key_encrypted = ?'); updateValues.push(api_key); }
+    if (api_key !== undefined && api_key !== '') { updateFields.push('api_key_encrypted = ?'); updateValues.push(encrypt(api_key)); }
     if (cost_per_image !== undefined) { updateFields.push('cost_per_image = ?'); updateValues.push(cost_per_image); }
     if (max_concurrent !== undefined) { updateFields.push('max_concurrent = ?'); updateValues.push(max_concurrent); }
     if (max_retries !== undefined) { updateFields.push('max_retries = ?'); updateValues.push(max_retries); }
@@ -147,7 +148,7 @@ modelRouter.put('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest
   }
 });
 
-modelRouter.delete('/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+modelRouter.delete('/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const modelId = req.params.id;
     // 始终软删除（禁用模型），保留数据完整性
@@ -161,7 +162,7 @@ modelRouter.delete('/:id', authMiddleware, adminMiddleware, async (req: AuthRequ
   }
 });
 
-modelRouter.post('/:id/icon', authMiddleware, adminMiddleware, upload.single('icon'), async (req: AuthRequest, res) => {
+modelRouter.post('/:id/icon', authMiddleware, adminMiddlewareRealtime, upload.single('icon'), async (req: AuthRequest, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: '请上传图标文件' });

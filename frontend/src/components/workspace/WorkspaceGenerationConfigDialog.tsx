@@ -1,0 +1,188 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Combobox } from '@/components/ui/combobox'
+import { apiFetch } from '@/lib/api'
+import { toast } from 'sonner'
+import Spinner from '@/components/Spinner'
+import type { Template, ImageModel } from '@/pages/WorkspacePage'
+
+interface Props {
+  open: boolean
+  selectedFissionTemplate: Template | null
+  selectedRefineTemplate: Template | null
+  selectedImageModel: ImageModel | null
+  selectedSize: string | null
+  onApply: (config: {
+    fissionTemplate: Template | null
+    refineTemplate: Template | null
+    imageModel: ImageModel | null
+    size: string | null
+  }) => void
+  onClose: () => void
+}
+
+const DEFAULT_SIZES = [
+  { label: '1:1 正方形', value: '1024x1024' },
+  { label: '2:3 竖版', value: '1024x1792' },
+  { label: '3:2 横版', value: '1792x1024' },
+  { label: '9:16 手机竖屏', value: '1080x1920' },
+  { label: '16:9 横屏', value: '1920x1080' },
+]
+
+function getModelSizes(model: ImageModel | null) {
+  return model?.supported_sizes?.ratios?.map(r => ({
+    label: `${r.ratio} (${r.width}×${r.height})`,
+    value: `${r.width}x${r.height}`,
+  })) || DEFAULT_SIZES
+}
+
+export default function WorkspaceGenerationConfigDialog({
+  open,
+  selectedFissionTemplate,
+  selectedRefineTemplate,
+  selectedImageModel,
+  selectedSize,
+  onApply,
+  onClose,
+}: Props) {
+  const [fissionTemplates, setFissionTemplates] = useState<Template[]>([])
+  const [refineTemplates, setRefineTemplates] = useState<Template[]>([])
+  const [models, setModels] = useState<ImageModel[]>([])
+  const [fissionTemplateId, setFissionTemplateId] = useState('')
+  const [refineTemplateId, setRefineTemplateId] = useState('')
+  const [imageModelId, setImageModelId] = useState('')
+  const [size, setSize] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const selectedModel = useMemo(() => models.find(m => String(m.id) === imageModelId) || null, [models, imageModelId])
+  const sizes = useMemo(() => getModelSizes(selectedModel), [selectedModel])
+  const fissionTemplateOptions = useMemo(() => fissionTemplates.map(t => ({
+    value: String(t.id),
+    label: t.name,
+    description: t.api_name || undefined,
+  })), [fissionTemplates])
+  const refineTemplateOptions = useMemo(() => refineTemplates.map(t => ({
+    value: String(t.id),
+    label: t.name,
+    description: t.api_name || undefined,
+  })), [refineTemplates])
+  const modelOptions = useMemo(() => models.map(m => ({
+    value: String(m.id),
+    label: m.display_name || m.name,
+    description: m.name,
+  })), [models])
+  const sizeOptions = useMemo(() => sizes.map(s => ({
+    value: s.value,
+    label: s.label,
+    description: s.value,
+  })), [sizes])
+
+  useEffect(() => {
+    if (!open) return
+    setFissionTemplateId(selectedFissionTemplate ? String(selectedFissionTemplate.id) : '')
+    setRefineTemplateId(selectedRefineTemplate ? String(selectedRefineTemplate.id) : '')
+    setImageModelId(selectedImageModel ? String(selectedImageModel.id) : '')
+    setSize(selectedSize || '')
+    fetchOptions()
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    if (selectedImageModel && String(selectedImageModel.id) === imageModelId) return
+    setSize('')
+  }, [imageModelId])
+
+  const fetchOptions = async () => {
+    setLoading(true)
+    try {
+      const [fissionRes, refineRes, modelsRes] = await Promise.all([
+        apiFetch('/api/admin/workspace/templates?type=fission'),
+        apiFetch('/api/admin/workspace/templates?type=deepen'),
+        apiFetch('/api/models?source=generate'),
+      ])
+      const [fissionData, refineData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), modelsRes.json()])
+      setFissionTemplates(fissionData.templates || [])
+      setRefineTemplates(refineData.templates || [])
+      setModels(modelsData.models || [])
+    } catch {
+      toast.error('获取生成配置失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApply = () => {
+    onApply({
+      fissionTemplate: fissionTemplates.find(t => String(t.id) === fissionTemplateId) || null,
+      refineTemplate: refineTemplates.find(t => String(t.id) === refineTemplateId) || null,
+      imageModel: selectedModel,
+      size: size || null,
+    })
+    onClose()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>生成配置</DialogTitle></DialogHeader>
+        {loading ? (
+          <div className="flex items-center justify-center py-10"><Spinner /></div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 py-2">
+            <div className="space-y-1.5">
+              <Label>裂变模板</Label>
+              <Combobox
+                value={fissionTemplateId}
+                onValueChange={setFissionTemplateId}
+                options={fissionTemplateOptions}
+                placeholder="选择裂变模板"
+                searchPlaceholder="搜索裂变模板..."
+                emptyText="暂无裂变模板"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>细化模板</Label>
+              <Combobox
+                value={refineTemplateId}
+                onValueChange={setRefineTemplateId}
+                options={refineTemplateOptions}
+                placeholder="选择细化模板"
+                searchPlaceholder="搜索细化模板..."
+                emptyText="暂无细化模板"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>图片模型</Label>
+              <Combobox
+                value={imageModelId}
+                onValueChange={setImageModelId}
+                options={modelOptions}
+                placeholder="选择图片模型"
+                searchPlaceholder="搜索图片模型..."
+                emptyText="暂无图片模型"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>尺寸</Label>
+              <Combobox
+                value={size}
+                onValueChange={setSize}
+                options={sizeOptions}
+                placeholder={selectedModel ? '选择尺寸' : '请先选择图片模型'}
+                searchPlaceholder="搜索尺寸..."
+                emptyText="暂无尺寸"
+                disabled={!selectedModel}
+              />
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={handleApply}>应用配置</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}

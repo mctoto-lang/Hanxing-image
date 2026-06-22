@@ -14,7 +14,7 @@ export const db: BetterSqlite3.Database = new BetterSqlite3(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-const JSON_FIELDS = new Set(['result_images', 'supported_sizes', 'allowed_models', 'managed_models', 'retry_errors', 'reference_images']);
+const JSON_FIELDS = new Set(['result_images', 'supported_sizes', 'allowed_models', 'managed_models', 'allowed_pages', 'retry_errors', 'reference_images', 'request_params', 'response_body']);
 const TIME_FIELDS = new Set(['created_at', 'updated_at', 'started_at', 'completed_at', 'login_at']);
 
 function parseJsonFields(row: any): any {
@@ -66,4 +66,12 @@ export function query(sql: string, params?: unknown[]): { rows: any[]; rowCount:
     res.lastInsertRowid = Number(result.lastInsertRowid);
   }
   return res;
+}
+
+/**
+ * 在事务中执行多个数据库操作
+ * 如果任何操作抛出异常，所有操作将回滚
+ */
+export function transaction<T>(fn: () => T): T {
+  return db.transaction(fn)();
 }

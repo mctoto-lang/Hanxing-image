@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { query } from '../db/index.js';
-import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middleware/auth.js';
 
 export const userRouter = Router();
 
-userRouter.get('/', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+userRouter.get('/', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query(
       `SELECT u.id, u.username, u.role, u.credits, u.creative_credits, u.project_credits, u.daily_credits_remaining, u.daily_credits_date, u.is_active, u.created_at, g.name as group_name
@@ -18,11 +18,14 @@ userRouter.get('/', authMiddleware, adminMiddleware, async (_req: AuthRequest, r
   }
 });
 
-userRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { username, password, group_id, role } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: '用户名和密码不能为空' });
+    if (!username || typeof username !== 'string' || username.trim().length < 3 || username.length > 50) {
+      return res.status(400).json({ error: '用户名长度需为 3-50 个字符' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 4 || password.length > 100) {
+      return res.status(400).json({ error: '密码长度需为 4-100 个字符' });
     }
     const passwordHash = await bcrypt.hash(password, 10);
 
@@ -54,21 +57,26 @@ userRouter.post('/', authMiddleware, adminMiddleware, async (req: AuthRequest, r
   }
 });
 
-userRouter.put('/:id/credits', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.put('/:id/credits', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { credits, creative_credits, project_credits } = req.body;
     const updateFields: string[] = [];
     const updateValues: any[] = [];
 
+    // 校验积分值为非负整数
+    const validateCredits = (val: any): boolean => Number.isInteger(val) && val >= 0;
     if (creative_credits !== undefined) {
+      if (!validateCredits(creative_credits)) return res.status(400).json({ error: '创作积分必须为非负整数' });
       updateFields.push('creative_credits = ?');
       updateValues.push(creative_credits);
     }
     if (project_credits !== undefined) {
+      if (!validateCredits(project_credits)) return res.status(400).json({ error: '项目积分必须为非负整数' });
       updateFields.push('project_credits = ?');
       updateValues.push(project_credits);
     }
     if (credits !== undefined) {
+      if (!validateCredits(credits)) return res.status(400).json({ error: '积分必须为非负整数' });
       updateFields.push('credits = ?');
       updateValues.push(credits);
     }
@@ -97,9 +105,19 @@ userRouter.put('/:id/credits', authMiddleware, adminMiddleware, async (req: Auth
   }
 });
 
-userRouter.put('/:id/group', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.put('/:id/group', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { group_id } = req.body;
+    if (group_id === null || group_id === undefined) {
+      return res.status(400).json({ error: '权限组ID不能为空' });
+    }
+    if (!Number.isInteger(group_id) || group_id <= 0) {
+      return res.status(400).json({ error: '无效的权限组ID' });
+    }
+    const groupCheck = query('SELECT id FROM permission_groups WHERE id = ?', [group_id]);
+    if (groupCheck.rows.length === 0) {
+      return res.status(400).json({ error: '权限组不存在' });
+    }
     const result = query(
       'UPDATE users SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [group_id, req.params.id]
@@ -117,7 +135,7 @@ userRouter.put('/:id/group', authMiddleware, adminMiddleware, async (req: AuthRe
   }
 });
 
-userRouter.put('/:id/toggle-active', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.put('/:id/toggle-active', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const result = query(
       'UPDATE users SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -136,7 +154,7 @@ userRouter.put('/:id/toggle-active', authMiddleware, adminMiddleware, async (req
   }
 });
 
-userRouter.put('/:id/password', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.put('/:id/password', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { new_password } = req.body;
     if (!new_password || new_password.length < 4) {
@@ -156,7 +174,7 @@ userRouter.put('/:id/password', authMiddleware, adminMiddleware, async (req: Aut
   }
 });
 
-userRouter.put('/:id/role', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+userRouter.put('/:id/role', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { role } = req.body;
     if (!role || !['admin', 'user'].includes(role)) {

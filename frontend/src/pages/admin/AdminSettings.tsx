@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { apiFetch } from '@/lib/api'
 import { Settings, Save, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,10 +21,7 @@ export default function AdminSettings() {
   const fetchSettings = useCallback(async () => {
     setLoading(true)
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/settings', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/settings')
       if (res.ok) {
         const data = await res.json()
         setSettings({
@@ -54,14 +52,9 @@ export default function AdminSettings() {
 
     setSaving(true)
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/settings', {
+      const res = await apiFetch('/api/admin/settings', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(settings),
+        body: settings,
       })
       if (res.ok) {
         toast.success('设置已保存')

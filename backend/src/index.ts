@@ -8,19 +8,32 @@ import { userRouter } from './routes/users.js';
 import { modelRouter } from './routes/models.js';
 import { taskRouter } from './routes/tasks.js';
 import { adminRouter } from './routes/admin.js';
-import { galleryRouter } from './routes/gallery.js';
 import { uploadRouter } from './routes/upload.js';
+import { workspaceRouter } from './routes/workspace.js';
+import { workspaceAdminRouter } from './routes/workspaceAdmin.js';
+import { imageRouter } from './routes/image.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { migrate } from './db/migrate.js';
 import { seed } from './db/seed.js';
 
 dotenv.config();
 
+// 启动时校验关键环境变量
+const INSECURE_JWT_SECRETS = new Set(['', 'hanxing-secret-key', 'hanxing-jwt-secret-change-me']);
+if (INSECURE_JWT_SECRETS.has(process.env.JWT_SECRET || '')) {
+  console.error('[启动失败] 必须配置安全的 JWT_SECRET 环境变量（不要使用默认值）');
+  process.exit(1);
+}
+if (!process.env.ENCRYPTION_KEY) {
+  console.error('[启动失败] 必须配置 ENCRYPTION_KEY 环境变量（用于加密 API Key 等敏感数据）');
+  process.exit(1);
+}
+
 migrate();
 seed().catch(console.error);
 
 // 确保必要的上传目录存在
-const uploadDirs = ['uploads/image', 'uploads/icons'];
+const uploadDirs = ['uploads/image', 'uploads/icons', 'uploads/thumb'];
 for (const dir of uploadDirs) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -36,15 +49,29 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static('uploads', {
+  maxAge: '7d',
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    // 图片文件设置长期缓存
+    if (/\.(png|jpe?g|webp|gif|svg|ico)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+  },
+}));
 
 app.use('/api/auth', authRouter);
 app.use('/api/admin/users', userRouter);
 app.use('/api/models', modelRouter);
 app.use('/api/tasks', taskRouter);
 app.use('/api/admin', adminRouter);
-app.use('/api/gallery', galleryRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/api/workspace', workspaceRouter);
+app.use('/api/admin/workspace', workspaceAdminRouter);
+app.use('/api/image', imageRouter);
 
 app.use(errorHandler);
 

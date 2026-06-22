@@ -1,3 +1,4 @@
+// 完整的 CSS 命名颜色映射表，避免 DOM 操作解析颜色
 const CSS_COLOR_NAMES: Record<string, [number, number, number]> = {
 	black: [0, 0, 0],
 	white: [255, 255, 255],
@@ -21,6 +22,131 @@ const CSS_COLOR_NAMES: Record<string, [number, number, number]> = {
 	lime: [0, 255, 0],
 	aqua: [0, 255, 255],
 	fuchsia: [255, 0, 255],
+	aliceblue: [240, 248, 255],
+	antiquewhite: [250, 235, 215],
+	aquamarine: [127, 255, 212],
+	azure: [240, 255, 255],
+	beige: [245, 245, 220],
+	bisque: [255, 228, 196],
+	blanchedalmond: [255, 235, 205],
+	blueviolet: [138, 43, 226],
+	burlywood: [222, 184, 135],
+	cadetblue: [95, 158, 160],
+	chartreuse: [127, 255, 0],
+	chocolate: [210, 105, 30],
+	coral: [255, 127, 80],
+	cornflowerblue: [100, 149, 237],
+	cornsilk: [255, 248, 220],
+	crimson: [220, 20, 60],
+	darkblue: [0, 0, 139],
+	darkcyan: [0, 139, 139],
+	darkgoldenrod: [184, 134, 11],
+	darkgray: [169, 169, 169],
+	darkgrey: [169, 169, 169],
+	darkgreen: [0, 100, 0],
+	darkkhaki: [189, 183, 107],
+	darkmagenta: [139, 0, 139],
+	darkolivegreen: [85, 107, 47],
+	darkorange: [255, 140, 0],
+	darkorchid: [153, 50, 204],
+	darkred: [139, 0, 0],
+	darksalmon: [233, 150, 122],
+	darkseagreen: [143, 188, 143],
+	darkslateblue: [72, 61, 139],
+	darkslategray: [47, 79, 79],
+	darkslategrey: [47, 79, 79],
+	darkturquoise: [0, 206, 209],
+	darkviolet: [148, 0, 211],
+	deeppink: [255, 20, 147],
+	deepskyblue: [0, 191, 255],
+	dimgray: [105, 105, 105],
+	dimgrey: [105, 105, 105],
+	dodgerblue: [30, 144, 255],
+	firebrick: [178, 34, 34],
+	floralwhite: [255, 250, 240],
+	forestgreen: [34, 139, 34],
+	gainsboro: [220, 220, 220],
+	ghostwhite: [248, 248, 255],
+	gold: [255, 215, 0],
+	goldenrod: [218, 165, 32],
+	greenyellow: [173, 255, 47],
+	honeydew: [240, 255, 240],
+	hotpink: [255, 105, 180],
+	indianred: [205, 92, 92],
+	indigo: [75, 0, 130],
+	ivory: [255, 255, 240],
+	khaki: [240, 230, 140],
+	lavender: [230, 230, 250],
+	lavenderblush: [255, 240, 245],
+	lawngreen: [124, 252, 0],
+	lemonchiffon: [255, 250, 205],
+	lightblue: [173, 216, 230],
+	lightcoral: [240, 128, 128],
+	lightcyan: [224, 255, 255],
+	lightgoldenrodyellow: [250, 250, 210],
+	lightgray: [211, 211, 211],
+	lightgrey: [211, 211, 211],
+	lightgreen: [144, 238, 144],
+	lightpink: [255, 182, 193],
+	lightsalmon: [255, 160, 122],
+	lightseagreen: [32, 178, 170],
+	lightskyblue: [135, 206, 250],
+	lightslategray: [119, 136, 153],
+	lightslategrey: [119, 136, 153],
+	lightsteelblue: [176, 196, 222],
+	lightyellow: [255, 255, 224],
+	limegreen: [50, 205, 50],
+	linen: [250, 240, 230],
+	mediumaquamarine: [102, 205, 170],
+	mediumblue: [0, 0, 205],
+	mediumorchid: [186, 85, 211],
+	mediumpurple: [147, 112, 219],
+	mediumseagreen: [60, 179, 113],
+	mediumslateblue: [123, 104, 238],
+	mediumspringgreen: [0, 250, 154],
+	mediumturquoise: [72, 209, 204],
+	mediumvioletred: [199, 21, 133],
+	midnightblue: [25, 25, 112],
+	mintcream: [245, 255, 250],
+	mistyrose: [255, 228, 225],
+	moccasin: [255, 228, 181],
+	navajowhite: [255, 222, 173],
+	oldlace: [253, 245, 230],
+	olivedrab: [107, 142, 35],
+	orangered: [255, 69, 0],
+	orchid: [218, 112, 214],
+	palegoldenrod: [238, 232, 170],
+	palegreen: [152, 251, 152],
+	paleturquoise: [175, 238, 238],
+	palevioletred: [219, 112, 147],
+	papayawhip: [255, 239, 213],
+	peachpuff: [255, 218, 185],
+	peru: [205, 133, 63],
+	plum: [221, 160, 221],
+	powderblue: [176, 224, 230],
+	rosybrown: [188, 143, 143],
+	royalblue: [65, 105, 225],
+	saddlebrown: [139, 69, 19],
+	salmon: [250, 128, 114],
+	sandybrown: [244, 164, 96],
+	seagreen: [46, 139, 87],
+	seashell: [255, 245, 238],
+	sienna: [160, 82, 45],
+	skyblue: [135, 206, 235],
+	slateblue: [106, 90, 205],
+	slategray: [112, 128, 144],
+	slategrey: [112, 128, 144],
+	snow: [255, 250, 250],
+	springgreen: [0, 255, 127],
+	steelblue: [70, 130, 180],
+	tan: [210, 180, 140],
+	thistle: [216, 191, 216],
+	tomato: [255, 99, 71],
+	turquoise: [64, 224, 208],
+	violet: [238, 130, 238],
+	wheat: [245, 222, 179],
+	whitesmoke: [245, 245, 245],
+	yellowgreen: [154, 205, 50],
 };
 
 export function hexToRgb(
@@ -42,28 +168,10 @@ export function hexToRgb(
 		return { r, g, b };
 	}
 
-	if (normalizedHex !== hex) {
-		try {
-			const tempElement = document.createElement("div");
-			tempElement.style.color = hex;
-			document.body.appendChild(tempElement);
-
-			const computedColor = window.getComputedStyle(tempElement).color;
-			document.body.removeChild(tempElement);
-
-			const rgbMatch = computedColor.match(
-				/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/,
-			);
-			if (rgbMatch) {
-				return {
-					r: parseInt(rgbMatch[1], 10),
-					g: parseInt(rgbMatch[2], 10),
-					b: parseInt(rgbMatch[3], 10),
-				};
-			}
-		} catch (e) {
-			console.error("Error processing color name:", e);
-		}
+	// 尝试从 CSS 命名颜色映射表中查找，避免 DOM 操作
+	const namedColor = CSS_COLOR_NAMES[hex.toLowerCase().trim()];
+	if (namedColor) {
+		return { r: namedColor[0], g: namedColor[1], b: namedColor[2] };
 	}
 
 	return null;
@@ -93,61 +201,34 @@ export function parseColor(
 	const hexResult = hexToRgb(color);
 	if (hexResult) return hexResult;
 
-	try {
-		if (typeof document !== "undefined") {
-			const tempElement = document.createElement("div");
-			tempElement.style.color = color;
-			document.body.appendChild(tempElement);
+	// 从 CSS 命名颜色映射表中查找，避免 DOM 操作
+	const namedColor = CSS_COLOR_NAMES[color.toLowerCase().trim()];
+	if (namedColor) {
+		return { r: namedColor[0], g: namedColor[1], b: namedColor[2] };
+	}
 
-			const computedColor = window.getComputedStyle(tempElement).color;
-			document.body.removeChild(tempElement);
+	// 解析 rgb/rgba 格式
+	const rgbDirectMatch = color.match(
+		/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/,
+	);
+	if (rgbDirectMatch) {
+		return {
+			r: parseInt(rgbDirectMatch[1], 10),
+			g: parseInt(rgbDirectMatch[2], 10),
+			b: parseInt(rgbDirectMatch[3], 10),
+		};
+	}
 
-			const rgbMatch = computedColor.match(
-				/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/,
-			);
-			if (rgbMatch) {
-				return {
-					r: parseInt(rgbMatch[1], 10),
-					g: parseInt(rgbMatch[2], 10),
-					b: parseInt(rgbMatch[3], 10),
-				};
-			}
-		} else {
-			const colorMap: Record<string, { r: number; g: number; b: number }> = {};
-			for (const [name, rgb] of Object.entries(CSS_COLOR_NAMES)) {
-				const [r, g, b] = rgb;
-				colorMap[name.toLowerCase()] = { r, g, b };
-			}
+	// 解析 hsl/hsla 格式
+	const hslMatch = color.match(
+		/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%(?:,\s*[\d.]+)?\)/,
+	);
+	if (hslMatch) {
+		const h = parseInt(hslMatch[1], 10) / 360;
+		const s = parseInt(hslMatch[2], 10) / 100;
+		const l = parseInt(hslMatch[3], 10) / 100;
 
-			const normalizedColorName = color.toLowerCase().trim();
-			if (colorMap[normalizedColorName]) {
-				return colorMap[normalizedColorName];
-			}
-		}
-
-		const rgbDirectMatch = color.match(
-			/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/,
-		);
-		if (rgbDirectMatch) {
-			return {
-				r: parseInt(rgbDirectMatch[1], 10),
-				g: parseInt(rgbDirectMatch[2], 10),
-				b: parseInt(rgbDirectMatch[3], 10),
-			};
-		}
-
-		const hslMatch = color.match(
-			/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%(?:,\s*[\d.]+)?\)/,
-		);
-		if (hslMatch) {
-			const h = parseInt(hslMatch[1], 10) / 360;
-			const s = parseInt(hslMatch[2], 10) / 100;
-			const l = parseInt(hslMatch[3], 10) / 100;
-
-			return hslToRgb(h, s, l);
-		}
-	} catch (e) {
-		console.error("Error processing color:", e);
+		return hslToRgb(h, s, l);
 	}
 
 	return null;

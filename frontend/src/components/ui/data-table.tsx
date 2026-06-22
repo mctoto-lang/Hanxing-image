@@ -43,6 +43,9 @@ interface DataTableProps<TData, TValue> {
   toolbar?: React.ReactNode
   pageIndex?: number
   onPageChange?: (page: number) => void
+  manualPagination?: boolean
+  pageCount?: number
+  totalCount?: number
 }
 
 export function DataTable<TData, TValue>({
@@ -56,6 +59,9 @@ export function DataTable<TData, TValue>({
   toolbar,
   pageIndex: controlledPageIndex,
   onPageChange,
+  manualPagination = false,
+  pageCount,
+  totalCount,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([])
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([])
@@ -81,6 +87,8 @@ export function DataTable<TData, TValue>({
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    manualPagination,
+    pageCount,
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     autoResetPageIndex: false,
@@ -197,7 +205,7 @@ export function DataTable<TData, TValue>({
       {showPagination && (
         <div className="flex items-center justify-between space-x-2 py-4">
           <div className="flex-1 text-sm text-muted-foreground">
-            共 {table.getFilteredRowModel().rows.length} 条记录
+            共 {totalCount ?? table.getFilteredRowModel().rows.length} 条记录
           </div>
           <div className="flex items-center space-x-2">
             <span className="text-sm text-muted-foreground">

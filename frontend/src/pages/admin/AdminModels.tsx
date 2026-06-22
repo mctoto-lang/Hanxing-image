@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Clock, Trash2, ArrowUpDown, MoreHorizontal, X, Power, PowerOff } from 'lucide-react'
+import { apiFetch } from '@/lib/api'
+import { Plus, Pencil, Upload, Image, Server, Key, Coins, Activity, Clock, Trash2, ArrowUpDown, MoreHorizontal, X, Power, PowerOff, ChevronDown } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +25,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
+import AdminChatApis from './AdminChatApis'
 
 interface Model {
   id: number
@@ -88,6 +90,7 @@ const emptyForm = {
 }
 
 export default function AdminModels() {
+  const [activeView, setActiveView] = useState<'image-models' | 'chat-apis'>('image-models')
   const [models, setModels] = useState<Model[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<Model | null>(null)
@@ -99,10 +102,7 @@ export default function AdminModels() {
 
   const fetchModels = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/models/all', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/models/all')
       const data = await res.json()
       setModels(data.models || [])
     } catch {}
@@ -160,12 +160,10 @@ export default function AdminModels() {
     if (!editingModel || !fileRef.current?.files?.[0]) return
     setUploading(true)
     try {
-      const token = localStorage.getItem('token')
       const formData = new FormData()
       formData.append('icon', fileRef.current.files[0])
-      const res = await fetch(`/api/models/${editingModel.id}/icon`, {
+      const res = await apiFetch(`/api/models/${editingModel.id}/icon`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: formData,
       })
       const data = await res.json()
@@ -182,7 +180,6 @@ export default function AdminModels() {
 
   const handleSave = async () => {
     try {
-      const token = localStorage.getItem('token')
       const method = editingModel ? 'PUT' : 'POST'
       const url = editingModel
         ? `/api/models/${editingModel.id}`
@@ -240,10 +237,9 @@ export default function AdminModels() {
         body.is_active = editingModel.is_active
       }
 
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
+        body,
       })
       const rawText = await res.text()
 
@@ -275,10 +271,8 @@ export default function AdminModels() {
   const handleDelete = async () => {
     if (!deletingModel) return
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/models/${deletingModel.id}`, {
+      const res = await apiFetch(`/api/models/${deletingModel.id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) {
         const data = await res.json()
@@ -296,12 +290,10 @@ export default function AdminModels() {
 
   const toggleModelActive = async (model: Model) => {
     try {
-      const token = localStorage.getItem('token')
       const newActive = !model.is_active
-      const res = await fetch(`/api/models/${model.id}`, {
+      const res = await apiFetch(`/api/models/${model.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ is_active: newActive }),
+        body: { is_active: newActive },
       })
       if (!res.ok) {
         const data = await res.json()
@@ -488,6 +480,27 @@ export default function AdminModels() {
     },
   ], [])
 
+  const viewLabels = { 'image-models': '图片模型', 'chat-apis': '对话模型' } as const
+
+  const viewSelector = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" className="gap-1.5">
+          {viewLabels[activeView]}
+          <ChevronDown className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        <DropdownMenuItem onClick={() => setActiveView('image-models')}>
+          图片模型
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setActiveView('chat-apis')}>
+          对话模型
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
   return (
     <div className="flex flex-col gap-6">
       <Card>
@@ -495,19 +508,26 @@ export default function AdminModels() {
           <CardTitle className="text-2xl font-bold">模型 / API 管理</CardTitle>
         </CardHeader>
         <CardContent>
-          <DataTable
-            columns={columns}
-            data={models}
-            searchPlaceholder="搜索模型名称..."
-            searchColumn="name"
-            pageSize={10}
-            toolbar={
-              <Button onClick={openCreateDialog}>
-                <Plus className="mr-2 h-4 w-4" />
-                添加模型
-              </Button>
-            }
-          />
+          {activeView === 'image-models' ? (
+            <DataTable
+              columns={columns}
+              data={models}
+              searchPlaceholder="搜索模型名称..."
+              searchColumn="name"
+              pageSize={10}
+              toolbar={
+                <div className="flex items-center gap-2">
+                  {viewSelector}
+                  <Button onClick={openCreateDialog}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    添加模型
+                  </Button>
+                </div>
+              }
+            />
+          ) : (
+            <AdminChatApis prefixToolbar={viewSelector} />
+          )}
         </CardContent>
       </Card>
 

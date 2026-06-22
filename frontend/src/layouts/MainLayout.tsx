@@ -1,10 +1,11 @@
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Bell, LogOut, Coins, User, Shield } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { apiFetch } from '@/lib/api'
 import AdminPanel from '@/components/AdminPanel'
 import { Suspense, useState, useEffect, useRef } from 'react'
 import type { FC } from 'react'
@@ -16,36 +17,45 @@ const LogoIcon: FC = () => (
   <img src="/logo.svg" alt="寒星" className="h-7 w-7" />
 )
 
-const GenerateIcon: FC<{ filled?: boolean }> = ({ filled }) => (
-  <svg viewBox="0 0 1024 1024" className="h-5 w-5">
-    <path d="M538.112 38.4c-15.36-44.544-39.936-44.544-55.296 0l-84.992 250.88c-14.848 44.544-64 93.184-108.032 108.544L40.448 482.816c-44.544 15.36-44.544 39.936 0 55.296l247.808 86.016c44.544 15.36 93.184 64.512 108.544 108.544l86.528 251.392c15.36 44.544 39.936 44.544 55.296 0l84.48-249.856c14.848-44.544 63.488-93.184 108.032-108.544l252.928-86.528c44.544-15.36 44.544-39.936 0-54.784l-248.832-83.968c-44.544-14.848-93.184-63.488-108.544-108.032-1.536-0.512-88.576-253.952-88.576-253.952z" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={filled ? 0 : 20} />
+const GenerateIcon: FC = () => (
+  <svg viewBox="47.2 47.2 929.6 929.6" className="h-5 w-5" fill="currentColor">
+    <path d="M512 51.2l146.56 314.24L972.8 512l-314.24 146.56L512 972.8l-146.56-314.24L51.2 512l314.24-146.56L512 51.2z" />
   </svg>
 )
 
-const AssetsIcon: FC<{ filled?: boolean }> = ({ filled }) => (
-  <svg viewBox="0 0 1024 1024" className="h-5 w-5">
-    <path d="M855.04 385.024q19.456 2.048 38.912 10.24t33.792 23.04 21.504 37.376 2.048 54.272q-2.048 8.192-8.192 40.448t-14.336 74.24-18.432 86.528-19.456 76.288q-5.12 18.432-14.848 37.888t-25.088 35.328-36.864 26.112-51.2 10.24l-567.296 0q-21.504 0-44.544-9.216t-42.496-26.112-31.744-40.96-12.288-53.76l0-439.296q0-62.464 33.792-97.792t95.232-35.328l503.808 0q22.528 0 46.592 8.704t43.52 24.064 31.744 35.84 12.288 44.032l0 11.264-53.248 0q-40.96 0-95.744-0.512t-116.736-0.512-115.712-0.512-92.672-0.512l-47.104 0q-26.624 0-41.472 16.896t-23.04 44.544q-8.192 29.696-18.432 62.976t-18.432 61.952q-10.24 33.792-20.48 65.536-2.048 8.192-2.048 13.312 0 17.408 11.776 29.184t29.184 11.776q31.744 0 43.008-39.936l54.272-198.656q133.12 1.024 243.712 1.024l286.72 0z" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={filled ? 0 : 20} />
+const AssetsIcon: FC = () => (
+  <svg viewBox="-8 34.8 1040 912" className="h-5 w-5" fill="currentColor">
+    <path d="M938.7 298.7v-85.3c0-47.1-38.2-85.3-85.3-85.3H512c0-47.1-38.2-85.3-85.3-85.3h-256c-47.1 0-85.3 38.2-85.3 85.3v170.7C38.2 298.7 0 336.9 0 384v469.3c0 47.1 38.2 85.3 85.3 85.3h853.3c47.1 0 85.3-38.2 85.3-85.3V384c0.1-47.1-38.1-85.3-85.2-85.3zM149.3 128c0-11.8 9.6-21.3 21.3-21.3h256c11.8 0 21.3 9.6 21.3 21.3v64h405.3c11.8 0 21.3 9.6 21.3 21.3v85.3H149.3V128zM960 853.3c0 11.8-9.6 21.3-21.3 21.3H85.3c-11.8 0-21.3-9.6-21.3-21.3V384c0-11.8 9.6-21.3 21.3-21.3h853.3c11.8 0 21.3 9.6 21.3 21.3v469.3z" />
   </svg>
 )
 
-const CanvasIcon: FC<{ filled?: boolean }> = ({ filled }) => (
-  <svg viewBox="0 0 1024 1024" className="h-5 w-5">
-    <path d="M284.458667 369.792c15.701333 0 28.416 12.714667 28.416 28.416v483.584a28.458667 28.458667 0 0 1-28.416 28.416H256a28.458667 28.458667 0 0 1-28.458667-28.416v-85.333333h-85.333333A28.458667 28.458667 0 0 1 113.792 768v-28.458667c0-15.701333 12.714667-28.416 28.416-28.416h85.333333V398.208c0-15.701333 12.757333-28.416 28.458667-28.416h28.458667z m597.333333 341.333333c15.701333 0 28.416 12.714667 28.416 28.416V768a28.458667 28.458667 0 0 1-28.416 28.458667h-85.333333v85.333333a28.458667 28.458667 0 0 1-28.458667 28.416h-28.458667a28.458667 28.458667 0 0 1-28.416-28.416v-85.333333H398.208A28.458667 28.458667 0 0 1 369.792 768v-28.458667c0-15.701333 12.714667-28.416 28.416-28.416h483.584zM768 113.792c15.701333 0 28.458667 12.714667 28.458667 28.416v85.333333h85.333333c15.701333 0 28.416 12.757333 28.416 28.458667v28.458667a28.458667 28.458667 0 0 1-28.416 28.416h-85.333333v312.917333a28.458667 28.458667 0 0 1-28.458667 28.416h-28.458667a28.458667 28.458667 0 0 1-28.416-28.416V284.970667a29.013333 29.013333 0 0 1 0-0.512V142.208c0-15.701333 12.714667-28.416 28.416-28.416H768z m-483.541333 0c15.701333 0 28.416 12.714667 28.416 28.416v85.333333h312.917333c15.701333 0 28.416 12.757333 28.416 28.458667v28.458667a28.458667 28.458667 0 0 1-28.416 28.416H142.208a28.458667 28.458667 0 0 1-28.416-28.416V256c0-15.701333 12.714667-28.458667 28.416-28.458667h85.333333v-85.333333c0-15.701333 12.757333-28.416 28.458667-28.416h28.458667z" fill={filled ? 'currentColor' : 'none'} stroke={filled ? 'none' : 'currentColor'} strokeWidth={filled ? 0 : 16} />
+const CanvasIcon: FC = () => (
+  <svg viewBox="160.3 93.9 740.6 807.2" className="h-5 w-5" fill="currentColor">
+    <path d="M808.1 142.3h-99.9v-37c0-4.1-3.3-7.4-7.4-7.4H649c-4.1 0-7.4 3.3-7.4 7.4v37H501v-37c0-4.1-3.3-7.4-7.4-7.4h-51.8c-4.1 0-7.4 3.3-7.4 7.4v37h-99.9c-16.4 0-29.6 13.2-29.6 29.6v111h-88.8c-16.4 0-29.6 13.2-29.6 29.6v584.6c0 16.4 13.2 29.6 29.6 29.6h473.6c16.4 0 29.6-13.2 29.6-29.6v-88.8h88.8c16.4 0 29.6-13.2 29.6-29.6V171.9c0-16.3-13.2-29.6-29.6-29.6zM652.7 860.1H253.1V349.5h201.6v160.9c0 20.4 16.6 37 37 37h160.9v312.7z m0-371.8H513.9V349.5h0.2l138.6 138.6v0.2z m118.4 253.4h-51.8V460.5L541.7 282.9H371.5v-74h62.9v29.6c0 4.1 3.3 7.4 7.4 7.4h51.8c4.1 0 7.4-3.3 7.4-7.4v-29.6h140.6v29.6c0 4.1 3.3 7.4 7.4 7.4h51.8c4.1 0 7.4-3.3 7.4-7.4v-29.6h62.9v532.8z m0 0" />
   </svg>
 )
 
-const AdminIcon: FC<{ filled?: boolean }> = ({ filled }) => (
-  <svg viewBox="0 0 1024 1024" className="h-5 w-5">
-    <path d="M897.861818 438.225455l-48.407273-14.661819a338.152727 338.152727 0 0 0-36.538181-87.738181l23.272727-44.45091a46.545455 46.545455 0 0 0-8.145455-54.923636l-40.494545-41.425454A46.545455 46.545455 0 0 0 732.625455 186.181818l-44.45091 23.272727a329.076364 329.076364 0 0 0-87.738181-34.676363l-14.661819-48.64A46.545455 46.545455 0 0 0 541.323636 93.090909h-58.647272a46.545455 46.545455 0 0 0-44.450909 33.047273L423.563636 174.545455a330.24 330.24 0 0 0-87.738181 36.538181L291.374545 186.181818a46.545455 46.545455 0 0 0-54.923636 7.912727l-41.425454 42.356364A46.545455 46.545455 0 0 0 186.181818 291.374545l23.272727 44.45091a336.756364 336.756364 0 0 0-34.676363 87.738181l-48.64 14.661819A46.545455 46.545455 0 0 0 93.090909 482.676364v58.647272a46.545455 46.545455 0 0 0 33.047273 44.450909l48.407273 14.661819a338.152727 338.152727 0 0 0 36.538181 87.738181L186.181818 732.625455a46.545455 46.545455 0 0 0 8.145455 54.923636l41.425454 41.425454a46.545455 46.545455 0 0 0 54.923637 7.912728l44.450909-23.272728a329.076364 329.076364 0 0 0 87.738182 36.072728l14.661818 48.64a46.545455 46.545455 0 0 0 45.149091 32.581818h58.647272a46.545455 46.545455 0 0 0 44.450909-33.047273l14.661819-48.407273a330.24 330.24 0 0 0 87.738181-36.538181l44.45091 23.272727a46.545455 46.545455 0 0 0 54.923636-7.912727l41.425454-41.425455a46.545455 46.545455 0 0 0 8.843637-54.225454l-23.272727-44.45091a336.756364 336.756364 0 0 0 36.072727-87.738181l48.64-14.661819A46.545455 46.545455 0 0 0 930.909091 541.323636v-58.647272a46.545455 46.545455 0 0 0-33.047273-44.450909z m-61.905454 117.527272a46.545455 46.545455 0 0 0-31.418182 32.814546 302.545455 302.545455 0 0 1-31.418182 75.403636 46.545455 46.545455 0 0 0-1.861818 45.149091l17.221818 32.814545-1.861818 1.861819-34.909091 34.909091-32.814545-17.221819a46.545455 46.545455 0 0 0-45.149091 1.861819 302.545455 302.545455 0 0 1-75.403636 31.418182 46.545455 46.545455 0 0 0-32.814546 31.418182l-10.705454 35.374545h-52.363637l-10.705454-35.374545a46.545455 46.545455 0 0 0-32.814546-31.418182 302.545455 302.545455 0 0 1-75.403636-31.418182 46.545455 46.545455 0 0 0-45.149091-1.861819l-32.814545 17.221819-1.861818-1.861819-34.909091-34.909091 17.221818-32.814545a46.545455 46.545455 0 0 0-1.861818-45.149091 302.545455 302.545455 0 0 1-31.418182-75.403636 46.545455 46.545455 0 0 0-31.418182-32.814546l-35.374545-10.705454v-52.363637l35.374545-10.705454a46.545455 46.545455 0 0 0 31.418182-32.814546 302.545455 302.545455 0 0 1 31.418182-75.403636 46.545455 46.545455 0 0 0 1.861818-45.149091l-17.221818-32.814545 1.861818-1.861819 34.909091-34.909091 32.814545 17.221819a46.545455 46.545455 0 0 0 45.149091-1.861819 302.545455 302.545455 0 0 1 75.403636-31.418182 46.545455 46.545455 0 0 0 32.814546-31.418182l10.705454-35.374545h52.363637l10.705454 35.374545a46.545455 46.545455 0 0 0 32.814546 31.418182 302.545455 302.545455 0 0 1 75.403636 31.418182 46.545455 46.545455 0 0 0 45.149091 1.861819l32.814545-17.221819 1.861818 1.861819 34.909091 34.909091-17.221818 32.814545a46.545455 46.545455 0 0 0 1.861818 45.149091 302.545455 302.545455 0 0 1 31.418182 75.403636 46.545455 46.545455 0 0 0 31.418182 32.814546l35.374545 10.705454v52.363637l-35.374545 10.705454z" fill={filled ? 'currentColor' : 'none'} stroke={filled ? 'none' : 'currentColor'} strokeWidth={filled ? 0 : 16} />
-    <path d="M512 372.363636a139.636364 139.636364 0 1 0 0 279.272728 139.636364 139.636364 0 0 0 0-279.272728z m0 209.454546a69.818182 69.818182 0 1 1 0-139.636364 69.818182 69.818182 0 0 1 0 139.636364z" fill={filled ? 'currentColor' : 'none'} stroke={filled ? 'none' : 'currentColor'} strokeWidth={filled ? 0 : 16} />
+const AdminIcon: FC = () => (
+  <svg viewBox="0 0 1024 1024" className="h-5 w-5" fill="currentColor">
+    <path d="M617.376 929.968c-8 17.648-25.152 29.136-44.096 29.136L451.2 960a48.336 48.336 0 0 1-44.16-28.576L370.72 854.4a331.568 331.568 0 0 1-42.992-21.76l-77.776 18.944a47.872 47.872 0 0 1-50.048-17.472L123.84 736.848c-11.68-15.44-14.032-36-5.696-53.2l37.28-76.752a471.776 471.776 0 0 1-9.392-43.792l-63.424-50.368a51.088 51.088 0 0 1-17.376-50.56l26.8-121.328c4.256-19.168 18.72-33.952 37.152-37.632l81.568-18.192a421.488 421.488 0 0 1 26.832-33.856l-1.28-81.92c-0.512-19.2 10.192-36.8 27.552-46.048l109.296-54.048a48.688 48.688 0 0 1 52.64 5.84l65.008 53.28a339.488 339.488 0 0 1 45.824 0.416l61.984-51.92a48.688 48.688 0 0 1 52.56-6.336l109.856 53.664a50.72 50.72 0 0 1 27.952 45.408l-0.416 85.6c9.168 10.528 18.048 22.08 26.048 33.84l78.24 16.432c18.688 3.728 33.552 18.608 37.76 37.584l28.128 120.96c4.208 19.008-2.24 38.48-16.976 50.608l-65.6 53.376c-2.832 16.624-5.6 29.472-9.28 41.728l36.752 72.704c8.448 17.44 6.704 37.984-4.8 53.168l-74.24 98.496c-11.728 15.44-30.928 22.752-49.424 18.512l-81.488-18.16a329.28 329.28 0 0 1-42.976 21.328l-33.312 74.288zM312.32 745.296c4-1.152 8.08-1.728 12.144-1.728a51.52 51.52 0 0 1 28.48 8.4 286.48 286.48 0 0 0 63.488 31.808c12.64 4.4 23.312 14.192 29.6 26.816l33.648 71.28 63.424-0.8 30.528-68.528c6.144-13.44 16.864-23.408 30.128-27.84a284.784 284.784 0 0 0 63.472-31.296 51.2 51.2 0 0 1 39.248-7.296l74.992 17.024 38.88-51.728-34.032-67.232a52 52 0 0 1-2.832-41.68c7.44-21.888 12.32-43.68 14.56-65.616 1.6-13.808 8.368-26.496 18.96-35.488l60.784-49.04-14.848-63.456-72.16-15.248a50.944 50.944 0 0 1-33.584-23.936c-12.4-20.064-26.08-38.016-40.992-53.344a54.336 54.336 0 0 1-14.912-37.184l0.448-78.832-57.536-28-57.12 48.032c-11.504 9.632-25.424 14.752-39.84 14.752a85.44 85.44 0 0 1-8.208-0.4 286.272 286.272 0 0 0-68.512-0.624 53.04 53.04 0 0 1-40.032-14.064l-60.032-49.216-57.12 28.384 1.216 75.344a54.128 54.128 0 0 1-15.2 38.576 282.464 282.464 0 0 0-39.888 50.272 51.088 51.088 0 0 1-32.96 23.648l-75.264 16.8-14.128 63.776 58.624 46.544a51.2 51.2 0 0 1 18.336 47.408 294.976 294.976 0 0 0 0.384 70.256 51.456 51.456 0 0 1-18.56 47.808l-34.448 28.224 32.256 43.424 71.84-17.408zM512 672a160 160 0 1 1 0-320 160 160 0 0 1 0 320z m0-64a96 96 0 1 0 0-192 96 96 0 0 0 0 192z" />
+  </svg>
+)
+
+const WorkspaceIcon: FC = () => (
+  <svg viewBox="60.5 88.4 903.4 845.9" className="h-5 w-5" fill="currentColor">
+    <path d="M864 92.4H258c-52.9 0-95.9 43-95.9 95.9v70.5h-1.7c-52.9 0-95.9 43-95.9 95.9v479.7c0 52.9 43 95.9 95.9 95.9h479.7c32.1 0 60.5-15.9 77.9-40.2h146c52.9 0 95.9-43 95.9-95.9v-606c0-52.8-43-95.8-95.9-95.8zM664.5 834.5c0 13.5-10.9 24.4-24.4 24.4H160.4c-13.5 0-24.4-10.9-24.4-24.4V354.8c0-13.5 10.9-24.4 24.4-24.4h479.7c13.5 0 24.4 10.9 24.4 24.4v479.7z m223.9-40.1c0 13.5-10.9 24.4-24.4 24.4H736v-464c0-52.9-43-95.9-95.9-95.9H233.6v-70.5c0-13.5 10.9-24.4 24.4-24.4h606c13.5 0 24.4 10.9 24.4 24.4v606z" />
+    <path d="M511.6 557.5H431v-80.6c0-19.8-16-35.8-35.8-35.8s-35.8 16-35.8 35.8v80.6h-80.6c-19.8 0-35.8 16-35.8 35.8 0 19.8 16 35.8 35.8 35.8h80.6v80.6c0 19.8 16 35.8 35.8 35.8s35.8-16 35.8-35.8V629h80.6c19.8 0 35.8-16 35.8-35.8 0-19.7-16-35.7-35.8-35.7z" />
   </svg>
 )
 
 const navItems = [
-  { to: '/', icon: GenerateIcon, label: '自由创作' },
-  { to: '/canvas', icon: CanvasIcon, label: '项目创作' },
-  { to: '/history', icon: AssetsIcon, label: '资产管理' },
+  { key: 'generate', to: '/', icon: GenerateIcon, label: '自由创作' },
+  { key: 'canvas', to: '/canvas', icon: CanvasIcon, label: '项目创作' },
+  { key: 'history', to: '/history', icon: AssetsIcon, label: '资产管理' },
+  { key: 'workspace', to: '/workspace', icon: WorkspaceIcon, label: '批量生图' },
 ]
+
+const allPageKeys = navItems.map(item => item.key)
 
 interface CreditLog {
   id: number
@@ -69,6 +79,7 @@ export default function MainLayout() {
   const [showAdmin, setShowAdmin] = useState(false)
   const [showUserCard, setShowUserCard] = useState(false)
   const [groupName, setGroupName] = useState('')
+  const [allowedPages, setAllowedPages] = useState<string[]>(allPageKeys)
   const [showCreditDialog, setShowCreditDialog] = useState(false)
   const [creditType, setCreditType] = useState<'creative' | 'project'>('creative')
   const [creditLogs, setCreditLogs] = useState<CreditLog[]>([])
@@ -79,24 +90,26 @@ export default function MainLayout() {
     if (isLoggedIn) {
       const fetchUserInfo = async () => {
         try {
-          const res = await fetch('/api/auth/me', {
-            headers: { Authorization: `Bearer ${token}` },
-          })
+          const res = await apiFetch('/api/auth/me')
           const data = await res.json()
           if (data.user?.group_name) {
             setGroupName(data.user.group_name)
           }
+          const pages = data.user?.allowed_pages
+          setAllowedPages(Array.isArray(pages) && pages.length > 0 ? pages : allPageKeys)
           if (data.user?.creative_credits !== undefined) {
             localStorage.setItem('userCreativeCredits', String(data.user.creative_credits))
           }
           if (data.user?.project_credits !== undefined) {
             localStorage.setItem('userProjectCredits', String(data.user.project_credits))
           }
-        } catch {}
+        } catch {
+          // 非关键数据，静默失败
+        }
       }
       fetchUserInfo()
     }
-  }, [isLoggedIn, token])
+  }, [isLoggedIn])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -124,9 +137,7 @@ export default function MainLayout() {
   const fetchCreditLogs = async (type: 'creative' | 'project') => {
     setLoadingLogs(true)
     try {
-      const res = await fetch(`/api/auth/credit-logs?type=${type}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch(`/api/auth/credit-logs?type=${type}`)
       const data = await res.json()
       setCreditLogs(data.logs || [])
     } catch {
@@ -143,6 +154,18 @@ export default function MainLayout() {
     fetchCreditLogs(type)
   }
 
+  const visibleNavItems = role === 'admin'
+    ? navItems
+    : navItems.filter(item => allowedPages.includes(item.key))
+
+  const currentPageKey = location.pathname === '/'
+    ? 'generate'
+    : navItems.find(item => item.to !== '/' && location.pathname.startsWith(item.to))?.key
+
+  if (isLoggedIn && role !== 'admin' && currentPageKey && !allowedPages.includes(currentPageKey)) {
+    return <Navigate to={visibleNavItems[0]?.to || '/'} replace />
+  }
+
   return (
     <div className="flex h-screen">
       <aside
@@ -155,7 +178,7 @@ export default function MainLayout() {
 
         <TooltipProvider>
         <nav className="flex flex-col items-center gap-1 flex-1 justify-center">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = item.to === '/'
               ? location.pathname === '/'
               : location.pathname.startsWith(item.to)
@@ -168,15 +191,15 @@ export default function MainLayout() {
                       to={item.to}
                       onClick={() => setShowAdmin(false)}
                       className={cn(
-                        'flex items-center justify-center w-14 h-14 rounded-xl transition-colors',
+                        'flex items-center justify-center w-10 h-10 rounded-lg transition-colors',
                         isActive && !showAdmin
-                          ? 'text-foreground'
-                          : 'text-muted-foreground/50 hover:text-muted-foreground',
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/50',
                       )}
                     />
                   }
                 >
-                  <IconComponent filled={isActive && !showAdmin} />
+                  <IconComponent />
                 </TooltipTrigger>
                 <TooltipContent side="right">{item.label}</TooltipContent>
               </Tooltip>
@@ -185,15 +208,20 @@ export default function MainLayout() {
           {role === 'admin' && (
             <Tooltip>
               <TooltipTrigger
-                onClick={() => setShowAdmin(!showAdmin)}
-                className={cn(
-                  'flex items-center justify-center w-14 h-14 rounded-xl transition-colors cursor-pointer border-none bg-transparent',
-                  showAdmin
-                    ? 'text-foreground'
-                    : 'text-muted-foreground/50 hover:text-muted-foreground',
-                )}
+                render={
+                  <button
+                    type="button"
+                    onClick={() => setShowAdmin(!showAdmin)}
+                    className={cn(
+                      'flex items-center justify-center w-10 h-10 rounded-lg transition-colors cursor-pointer border-none bg-transparent',
+                      showAdmin
+                        ? 'bg-accent text-accent-foreground'
+                        : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/50',
+                    )}
+                  />
+                }
               >
-                <AdminIcon filled={showAdmin} />
+                <AdminIcon />
               </TooltipTrigger>
               <TooltipContent side="right">系统管理</TooltipContent>
             </Tooltip>
@@ -298,7 +326,7 @@ export default function MainLayout() {
       <main className="flex-1 min-w-0 overflow-hidden">
         {showAdmin ? (
           <Suspense fallback={<div className="flex items-center justify-center h-full"><Spinner /></div>}>
-            <AdminPanel onClose={() => setShowAdmin(false)} />
+            <AdminPanel />
           </Suspense>
         ) : (
           <Outlet />

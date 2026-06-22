@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { apiFetch } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { toImageSrc } from '@/lib/utils'
 import { DataTable, type ColumnDef } from '@/components/ui/data-table'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Sheet,
   SheetContent,
@@ -19,7 +22,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { ArrowUpDown, FileText, LogIn, Eye, CircleAlert, Copy, Check, Trash2 } from 'lucide-react'
+import { ArrowUpDown, FileText, LogIn, MessageSquare, Eye, CircleAlert, Copy, Check, Trash2 } from 'lucide-react'
+
+type LogType = 'tasks' | 'chat' | 'login'
 
 interface TaskLog {
   id: number
@@ -30,6 +35,7 @@ interface TaskLog {
   credits_charged: number
   credits_type: string
   source: string
+  task_type: string
   retry_count: number
   error_message: string | null
   retry_errors: string[]
@@ -60,6 +66,23 @@ interface LoginLog {
   ip_address: string
   user_agent: string
   login_at: string
+}
+
+interface ChatLog {
+  id: number
+  user_id: number | null
+  username: string | null
+  api_type: string
+  api_config_name: string | null
+  workspace_task_id: number | null
+  card_id: number | null
+  request_params: string | object | null
+  response_status: string
+  response_body: string | object | null
+  duration_ms: number | null
+  retry_count: number
+  error_message: string | null
+  created_at: string
 }
 
 interface ParsedError {
@@ -186,56 +209,50 @@ function ErrorDialog({ open, onOpenChange, errorMessage }: {
 }
 
 export default function AdminLogs() {
-  const [tab, setTab] = useState('tasks')
+  const [logType, setLogType] = useState<LogType>('tasks')
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([])
   const [taskLogs, setTaskLogs] = useState<TaskLog[]>([])
+  const [chatLogs, setChatLogs] = useState<ChatLog[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
   const [selectedTask, setSelectedTask] = useState<TaskLog | null>(null)
+  const [selectedChatLog, setSelectedChatLog] = useState<ChatLog | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [chatSheetOpen, setChatSheetOpen] = useState(false)
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
   const [errorDialogContent, setErrorDialogContent] = useState('')
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletingTask, setDeletingTask] = useState<TaskLog | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [pageIndex, setPageIndex] = useState(0)
+  const pageSize = 15
 
-  const fetchLoginLogs = useCallback(async () => {
+  const fetchLogs = useCallback(async () => {
+    setLoading(true)
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/logs/login?limit=100', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const endpoint = logType === 'login' ? 'login' : logType === 'chat' ? 'chat' : 'tasks'
+      const params = new URLSearchParams({ page: String(pageIndex + 1), limit: String(pageSize) })
+      const res = await apiFetch(`/api/admin/logs/${endpoint}?${params}`)
       const data = await res.json()
-      setLoginLogs(data.logs || [])
-    } catch {}
-  }, [])
+      if (logType === 'login') setLoginLogs(data.logs || [])
+      else if (logType === 'chat') setChatLogs(data.logs || [])
+      else setTaskLogs(data.tasks || [])
+      setTotal(data.total || 0)
+    } catch {
+    } finally {
+      setLoading(false)
+    }
+  }, [logType, pageIndex])
 
-  const fetchTaskLogs = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/logs/tasks?limit=100', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      setTaskLogs(data.logs || [])
-    } catch {}
-  }, [])
-
-  const handleTabChange = (value: string) => {
-    setTab(value)
+  const handleLogTypeChange = (value: LogType | null) => {
+    if (!value) return
+    setLogType(value as LogType)
+    setPageIndex(0)
   }
 
   useEffect(() => {
-    fetchTaskLogs()
-    fetchLoginLogs()
-  }, [fetchTaskLogs, fetchLoginLogs])
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (tab === 'login') fetchLoginLogs()
-      else fetchTaskLogs()
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [tab, fetchLoginLogs, fetchTaskLogs])
+    fetchLogs()
+  }, [fetchLogs])
 
   const getStatusBadge = (status: string, retryCount: number) => {
     switch (status) {
@@ -254,8 +271,11 @@ export default function AdminLogs() {
     }
   }
 
-  const getSourceBadge = (source: string) => {
-    if (source === 'project') {
+  const getSourceBadge = (task: Pick<TaskLog, 'source' | 'task_type'>) => {
+    if (task.task_type === 'workspace_batch' || task.task_type === 'workspace_single' || task.source === 'workspace') {
+      return <Badge className="bg-purple-500 hover:bg-purple-600">批量生图</Badge>
+    }
+    if (task.source === 'project') {
       return <Badge variant="default">工作项目</Badge>
     }
     return <Badge variant="secondary">自由创作</Badge>
@@ -266,10 +286,7 @@ export default function AdminLogs() {
     setSheetOpen(true)
     // 获取完整任务详情（含 api_call_logs）
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/admin/logs/tasks/${task.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch(`/api/admin/logs/tasks/${task.id}`)
       if (res.ok) {
         const data = await res.json()
         if (data.task?.api_call_logs) {
@@ -293,13 +310,12 @@ export default function AdminLogs() {
     if (!deletingTask) return
     setDeleting(true)
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/admin/logs/tasks/${deletingTask.id}`, {
+      const res = await apiFetch(`/api/admin/logs/tasks/${deletingTask.id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
         setTaskLogs((prev) => prev.filter((log) => log.id !== deletingTask.id))
+        setTotal((prev) => Math.max(prev - 1, 0))
         setDeleteDialogOpen(false)
         setDeletingTask(null)
       }
@@ -312,6 +328,25 @@ export default function AdminLogs() {
     if (!selectedTask) return null
     return loginLogs.find((log) => log.username === selectedTask.username) || null
   }
+
+  const toolbar = (
+    <Select value={logType} onValueChange={handleLogTypeChange}>
+      <SelectTrigger className="w-36 h-8 text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="tasks">
+          <span className="flex items-center gap-2"><FileText className="h-3.5 w-3.5" />生图日志</span>
+        </SelectItem>
+        <SelectItem value="chat">
+          <span className="flex items-center gap-2"><MessageSquare className="h-3.5 w-3.5" />对话日志</span>
+        </SelectItem>
+        <SelectItem value="login">
+          <span className="flex items-center gap-2"><LogIn className="h-3.5 w-3.5" />登录日志</span>
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  )
 
   const taskColumns: ColumnDef<TaskLog, unknown>[] = useMemo(() => [
     {
@@ -358,7 +393,7 @@ export default function AdminLogs() {
     {
       accessorKey: 'source',
       header: '类型',
-      cell: ({ row }) => getSourceBadge(row.original.source),
+      cell: ({ row }) => getSourceBadge(row.original),
     },
     {
       accessorKey: 'created_at',
@@ -411,6 +446,61 @@ export default function AdminLogs() {
     },
   ], [])
 
+  const chatColumns: ColumnDef<ChatLog, unknown>[] = useMemo(() => [
+    {
+      accessorKey: 'created_at',
+      header: ({ column }) => (
+        <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
+          时间
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => new Date(row.original.created_at).toLocaleString('zh-CN'),
+    },
+    {
+      accessorKey: 'username',
+      header: '用户',
+      cell: ({ row }) => row.original.username || '-',
+    },
+    {
+      accessorKey: 'api_type',
+      header: '类型',
+      cell: ({ row }) => <Badge variant="secondary">{row.original.api_type === 'chat' ? '对话' : row.original.api_type}</Badge>,
+    },
+    {
+      accessorKey: 'api_config_name',
+      header: '接口',
+      cell: ({ row }) => row.original.api_config_name || '-',
+    },
+    {
+      accessorKey: 'response_status',
+      header: '状态',
+      cell: ({ row }) => (
+        <Badge variant={row.original.response_status === 'success' ? 'default' : 'destructive'}>
+          {row.original.response_status === 'success' ? '成功' : '失败'}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: 'duration_ms',
+      header: '耗时',
+      cell: ({ row }) => row.original.duration_ms != null ? `${row.original.duration_ms}ms` : '-',
+    },
+    {
+      id: 'actions',
+      header: '操作',
+      cell: ({ row }) => (
+        <Button variant="ghost" size="sm" onClick={() => {
+          setSelectedChatLog(row.original)
+          setChatSheetOpen(true)
+        }} className="h-8 px-2">
+          <Eye className="h-3.5 w-3.5 mr-1" />
+          详情
+        </Button>
+      ),
+    },
+  ], [])
+
   const loginColumns: ColumnDef<LoginLog, unknown>[] = useMemo(() => [
     {
       accessorKey: 'username',
@@ -450,86 +540,99 @@ export default function AdminLogs() {
           <CardTitle className="text-2xl font-bold">日志查看</CardTitle>
         </CardHeader>
         <CardContent>
-          {tab === 'tasks' ? (
+          {logType === 'tasks' && (
             <DataTable
               columns={taskColumns}
               data={taskLogs}
               searchPlaceholder="搜索用户名..."
               searchColumn="username"
               showColumnToggle={false}
-              pageSize={15}
+              pageSize={pageSize}
               pageIndex={pageIndex}
               onPageChange={setPageIndex}
-              toolbar={
-                <div className="flex items-center gap-1 border rounded-md p-0.5">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => handleTabChange('tasks')}
-                    className="h-8"
-                  >
-                    <FileText className="mr-1.5 h-3.5 w-3.5" />
-                    生图日志
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleTabChange('login')}
-                    className="h-8"
-                  >
-                    <LogIn className="mr-1.5 h-3.5 w-3.5" />
-                    登录日志
-                  </Button>
-                </div>
-              }
+              toolbar={toolbar}
+              manualPagination
+              pageCount={Math.max(Math.ceil(total / pageSize), 1)}
+              totalCount={total}
             />
-          ) : (
+          )}
+          {logType === 'chat' && (
+            <DataTable
+              columns={chatColumns}
+              data={chatLogs}
+              searchPlaceholder="搜索用户名..."
+              searchColumn="username"
+              showColumnToggle={false}
+              pageSize={pageSize}
+              pageIndex={pageIndex}
+              onPageChange={setPageIndex}
+              toolbar={toolbar}
+              manualPagination
+              pageCount={Math.max(Math.ceil(total / pageSize), 1)}
+              totalCount={total}
+            />
+          )}
+          {logType === 'login' && (
             <DataTable
               columns={loginColumns}
               data={loginLogs}
               searchPlaceholder="搜索用户名..."
               searchColumn="username"
               showColumnToggle={false}
-              pageSize={15}
+              pageSize={pageSize}
               pageIndex={pageIndex}
               onPageChange={setPageIndex}
-              toolbar={
-                <div className="flex items-center gap-1 border rounded-md p-0.5">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleTabChange('tasks')}
-                    className="h-8"
-                  >
-                    <FileText className="mr-1.5 h-3.5 w-3.5" />
-                    生图日志
-                  </Button>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => handleTabChange('login')}
-                    className="h-8"
-                  >
-                    <LogIn className="mr-1.5 h-3.5 w-3.5" />
-                    登录日志
-                  </Button>
-                </div>
-              }
+              toolbar={toolbar}
+              manualPagination
+              pageCount={Math.max(Math.ceil(total / pageSize), 1)}
+              totalCount={total}
             />
           )}
+          {loading && <p className="mt-2 text-xs text-muted-foreground">正在刷新日志...</p>}
         </CardContent>
       </Card>
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
         <SheetContent className="w-[400px] sm:w-[540px] overflow-y-auto">
-          <SheetHeader className="px-1">
-            <SheetTitle>任务详情</SheetTitle>
-            <SheetDescription>
-              查看任务的详细信息
-            </SheetDescription>
+          <SheetHeader className="px-1 pb-4 border-b border-border text-left">
+            <div className="flex items-start gap-3 pr-10">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <FileText className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <SheetTitle className="text-xl font-semibold tracking-tight">任务详情</SheetTitle>
+                <SheetDescription className="leading-6">
+                  查看本次生图任务的基础信息、执行状态和 API 调用记录
+                </SheetDescription>
+              </div>
+            </div>
+            {selectedTask && (
+              <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground">任务 ID</p>
+                    <p className="mt-1 truncate font-mono text-sm text-foreground">{selectedTask.id}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {getSourceBadge(selectedTask)}
+                    {getStatusBadge(selectedTask.status, selectedTask.retry_count || 0)}
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-muted-foreground">
+                  <div className="min-w-0">
+                    <span className="block font-medium text-foreground">{selectedTask.username}</span>
+                    <span>提交用户</span>
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <span className="block font-medium text-foreground">{new Date(selectedTask.created_at).toLocaleString('zh-CN')}</span>
+                    <span>创建时间</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </SheetHeader>
           {selectedTask && (
-            <div className="mt-6 space-y-6 px-1">
+            <div className="mt-5 space-y-6 px-1">
               <div className="space-y-2">
                 <Label className="text-sm font-medium text-foreground">任务ID</Label>
                 <p className="text-sm text-muted-foreground pl-1">{selectedTask.id}</p>
@@ -568,7 +671,7 @@ export default function AdminLogs() {
                 </div>
                 <div className="space-y-2">
                   <Label className="text-sm font-medium text-foreground">类型</Label>
-                  <div className="pl-1">{getSourceBadge(selectedTask.source)}</div>
+                  <div className="pl-1">{getSourceBadge(selectedTask)}</div>
                 </div>
               </div>
 
@@ -705,7 +808,7 @@ export default function AdminLogs() {
                   <div className="grid grid-cols-2 gap-2 pl-1">
                     {selectedTask.result_images.map((img, idx) => (
                       <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-muted">
-                        <img src={img} alt="" className="w-full h-full object-cover" />
+                        <img src={toImageSrc(img, { width: 200, height: 200 })} alt="" className="w-full h-full object-cover" />
                       </div>
                     ))}
                   </div>
@@ -737,6 +840,145 @@ export default function AdminLogs() {
         errorMessage={errorDialogContent}
       />
 
+      <Sheet open={chatSheetOpen} onOpenChange={(open) => {
+        setChatSheetOpen(open)
+        if (!open) setSelectedChatLog(null)
+      }}>
+        <SheetContent className="w-[400px] sm:w-[540px] overflow-y-auto">
+          <SheetHeader className="px-1 pb-4 border-b border-border text-left">
+            <div className="flex items-start gap-3 pr-10">
+              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <MessageSquare className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <SheetTitle className="text-xl font-semibold tracking-tight">对话日志详情</SheetTitle>
+                <SheetDescription className="leading-6">
+                  查看本次对话请求的详细信息和响应内容
+                </SheetDescription>
+              </div>
+            </div>
+            {selectedChatLog && (
+              <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground">日志 ID</p>
+                    <p className="mt-1 truncate font-mono text-sm text-foreground">{selectedChatLog.id}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Badge variant="secondary">{selectedChatLog.api_type === 'chat' ? '对话' : selectedChatLog.api_type}</Badge>
+                    <Badge variant={selectedChatLog.response_status === 'success' ? 'default' : 'destructive'}>
+                      {selectedChatLog.response_status === 'success' ? '成功' : '失败'}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-muted-foreground">
+                  <div className="min-w-0">
+                    <span className="block font-medium text-foreground">{selectedChatLog.username || '-'}</span>
+                    <span>提交用户</span>
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <span className="block font-medium text-foreground">{new Date(selectedChatLog.created_at).toLocaleString('zh-CN')}</span>
+                    <span>请求时间</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </SheetHeader>
+          {selectedChatLog && (
+            <div className="mt-5 space-y-6 px-1">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">接口</Label>
+                  <p className="text-sm text-muted-foreground pl-1">{selectedChatLog.api_config_name || '-'}</p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">耗时</Label>
+                  <p className="text-sm text-muted-foreground pl-1">{selectedChatLog.duration_ms != null ? `${selectedChatLog.duration_ms}ms` : '-'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">任务ID</Label>
+                  <p className="text-sm text-muted-foreground pl-1">{selectedChatLog.workspace_task_id || '-'}</p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">卡片ID</Label>
+                  <p className="text-sm text-muted-foreground pl-1">{selectedChatLog.card_id || '-'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">状态</Label>
+                  <div className="pl-1">
+                    <Badge variant={selectedChatLog.response_status === 'success' ? 'default' : 'destructive'}>
+                      {selectedChatLog.response_status === 'success' ? '成功' : '失败'}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">重试次数</Label>
+                  <p className="text-sm text-muted-foreground pl-1">{selectedChatLog.retry_count}</p>
+                </div>
+              </div>
+
+              {selectedChatLog.error_message && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">错误信息</Label>
+                  <div className="rounded-lg border border-destructive/20 overflow-hidden">
+                    <div className="px-3 py-1.5 bg-destructive/5 border-b border-destructive/10 flex items-center gap-2">
+                      <Badge variant="destructive" className="text-[10px] px-1.5 py-0">失败</Badge>
+                    </div>
+                    <div className="p-3 bg-destructive/10">
+                      <p className="text-xs font-mono break-all text-destructive">{selectedChatLog.error_message}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedChatLog.request_params && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">请求参数</Label>
+                  <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto max-h-60 font-mono whitespace-pre-wrap break-all">{(() => {
+                    const params = selectedChatLog.request_params
+                    if (typeof params === 'string') {
+                      try { return JSON.stringify(JSON.parse(params), null, 2) } catch { return params }
+                    }
+                    return JSON.stringify(params, null, 2)
+                  })()}</pre>
+                </div>
+              )}
+
+              {selectedChatLog.response_body && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-foreground">响应内容</Label>
+                  <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto max-h-60 font-mono whitespace-pre-wrap break-all">{(() => {
+                    const body = selectedChatLog.response_body
+                    if (typeof body === 'string') {
+                      try { return JSON.stringify(JSON.parse(body), null, 2) } catch { return body }
+                    }
+                    return JSON.stringify(body, null, 2)
+                  })()}</pre>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-foreground">时间信息</Label>
+                <div className="space-y-1 text-sm text-muted-foreground pl-1">
+                  <p>请求时间: {new Date(selectedChatLog.created_at).toLocaleString('zh-CN')}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          <SheetFooter className="mt-6">
+            <Button variant="outline" onClick={() => setChatSheetOpen(false)}>
+              关闭
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -753,8 +995,14 @@ export default function AdminLogs() {
               <div className="mt-3 p-3 bg-muted rounded-lg">
                 <p className="text-xs text-muted-foreground">任务ID: {deletingTask.id}</p>
                 <p className="text-xs text-muted-foreground">用户: {deletingTask.username}</p>
+                <div className="mt-1">{getSourceBadge(deletingTask)}</div>
                 <p className="text-xs text-muted-foreground">时间: {new Date(deletingTask.created_at).toLocaleString('zh-CN')}</p>
               </div>
+            )}
+            {deletingTask && (deletingTask.source === 'workspace' || deletingTask.task_type?.startsWith('workspace')) && (
+              <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                该任务来自工作台，删除可能影响卡片图片关联，请确认已经了解风险后再继续。
+              </p>
             )}
           </div>
           <DialogFooter className="gap-2 sm:gap-0">

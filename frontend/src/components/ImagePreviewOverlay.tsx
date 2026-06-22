@@ -107,6 +107,7 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
   if (!open || !imageUrl) return null
 
   const src = toImageSrc(imageUrl)
+  const blurSrc = toImageSrc(imageUrl, { width: 100, height: 100 })
 
   return (
     <div
@@ -116,7 +117,7 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
       <div
         className="absolute inset-0 bg-background/80 backdrop-blur-xl"
         style={{
-          backgroundImage: `url(${src})`,
+          backgroundImage: `url(${blurSrc})`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: 'blur(40px) brightness(0.5)',

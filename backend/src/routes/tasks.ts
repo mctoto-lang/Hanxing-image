@@ -1,16 +1,44 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { query } from '../db/index.js';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { taskQueue } from '../services/queue.js';
 
 export const taskRouter = Router();
 
-taskRouter.post('/generate', authMiddleware, async (req: AuthRequest, res) => {
+// 生图接口速率限制：每用户每分钟最多 10 次
+const generateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => {
+    // 优先使用用户 ID（已登录用户）
+    if (req.userId) return String(req.userId);
+    // 未登录用户使用 IP，并通过 ipKeyGenerator 处理 IPv6
+    return ipKeyGenerator(req.ip);
+  },
+  message: { error: '请求过于频繁，请稍后重试' },
+});
+
+taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRequest, res) => {
   try {
     const { model_id, prompt, image_size, image_count, source, reference_images } = req.body;
-    if (!prompt || !model_id) {
-      return res.status(400).json({ error: '提示词和模型不能为空' });
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return res.status(400).json({ error: '提示词不能为空' });
+    }
+    if (prompt.length > 5000) {
+      return res.status(400).json({ error: '提示词过长（最多 5000 字符）' });
+    }
+    if (!model_id) {
+      return res.status(400).json({ error: '模型不能为空' });
+    }
+
+    // 校验生图数量范围
+    const count = Math.min(Math.max(Math.floor(Number(image_count) || 1), 1), 10);
+    if (!Number.isFinite(count) || count < 1) {
+      return res.status(400).json({ error: '生图数量无效' });
     }
 
     const creditsType = source === 'project' ? 'project' : 'creative';
@@ -38,7 +66,6 @@ taskRouter.post('/generate', authMiddleware, async (req: AuthRequest, res) => {
       return res.status(403).json({ error: '当前权限组不允许使用此模型' });
     }
 
-    const count = image_count || 1;
     const totalCost = model.cost_per_image * count;
 
     const availableCredits = creditsType === 'project' ? (user.project_credits || 0) : (user.creative_credits || 0);
@@ -55,31 +82,47 @@ taskRouter.post('/generate', authMiddleware, async (req: AuthRequest, res) => {
       return res.status(429).json({ error: '已达到最大并发任务数' });
     }
 
-    if (creditsType === 'project') {
-      const updateResult = query(
-        'UPDATE users SET project_credits = project_credits - ? WHERE id = ? AND project_credits >= ?',
-        [totalCost, req.userId, totalCost]
-      );
-      if (updateResult.changes === 0) {
-        return res.status(400).json({ error: `项目积分不足，需要 ${totalCost} 积分` });
-      }
-    } else {
-      const updateResult = query(
-        'UPDATE users SET creative_credits = creative_credits - ? WHERE id = ? AND creative_credits >= ?',
-        [totalCost, req.userId, totalCost]
-      );
-      if (updateResult.changes === 0) {
-        return res.status(400).json({ error: `创作积分不足，需要 ${totalCost} 积分` });
-      }
-    }
-
+    // 使用事务确保积分扣除和任务创建的原子性
     const taskUuid = crypto.randomUUID();
     const refImagesJson = JSON.stringify(Array.isArray(reference_images) ? reference_images : []);
-    const insertResult = query(
-      `INSERT INTO generation_tasks (user_id, model_id, prompt, image_size, image_count, status, priority, credits_charged, credits_type, source, task_uuid, reference_images)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
-      [req.userId, model_id, prompt, image_size || '1024x1024', count, user.priority || 0, totalCost, creditsType, creditsType, taskUuid, refImagesJson]
-    );
+    let insertResult;
+    try {
+      insertResult = transaction(() => {
+        // 在事务内扣除积分，确保原子性
+        if (creditsType === 'project') {
+          const updateResult = query(
+            'UPDATE users SET project_credits = project_credits - ? WHERE id = ? AND project_credits >= ?',
+            [totalCost, req.userId, totalCost]
+          );
+          if (updateResult.changes === 0) {
+            throw new Error('PROJECT_CREDITS_INSUFFICIENT');
+          }
+        } else {
+          const updateResult = query(
+            'UPDATE users SET creative_credits = creative_credits - ? WHERE id = ? AND creative_credits >= ?',
+            [totalCost, req.userId, totalCost]
+          );
+          if (updateResult.changes === 0) {
+            throw new Error('CREATIVE_CREDITS_INSUFFICIENT');
+          }
+        }
+
+        return query(
+          `INSERT INTO generation_tasks (user_id, model_id, prompt, image_size, image_count, status, priority, credits_charged, credits_type, source, task_type, task_uuid, reference_images)
+           VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, 'normal', ?, ?)`,
+          [req.userId, model_id, prompt, image_size || '1024x1024', count, user.priority || 0, totalCost, creditsType, creditsType, taskUuid, refImagesJson]
+        );
+      });
+    } catch (err) {
+      const errMsg = (err as Error).message;
+      if (errMsg === 'PROJECT_CREDITS_INSUFFICIENT') {
+        return res.status(400).json({ error: `项目积分不足，需要 ${totalCost} 积分` });
+      }
+      if (errMsg === 'CREATIVE_CREDITS_INSUFFICIENT') {
+        return res.status(400).json({ error: `创作积分不足，需要 ${totalCost} 积分` });
+      }
+      return res.status(500).json({ error: '创建生图任务失败' });
+    }
     const taskResult = query(
       'SELECT * FROM generation_tasks WHERE id = ?',
       [insertResult.lastInsertRowid]
@@ -185,28 +228,43 @@ taskRouter.post('/:id/retry', authMiddleware, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: `${creditsTypeName}积分不足，需要 ${totalCost} 积分` });
     }
 
-    if (creditsType === 'project') {
-      const updateResult = query(
-        'UPDATE users SET project_credits = project_credits - ? WHERE id = ? AND project_credits >= ?',
-        [totalCost, req.userId, totalCost]
-      );
-      if (updateResult.changes === 0) {
+    // 将积分扣除和任务重试放入同一事务，确保原子性
+    try {
+      transaction(() => {
+        // 在事务内扣除积分
+        if (creditsType === 'project') {
+          const updateResult = query(
+            'UPDATE users SET project_credits = project_credits - ? WHERE id = ? AND project_credits >= ?',
+            [totalCost, req.userId, totalCost]
+          );
+          if (updateResult.changes === 0) {
+            throw new Error('PROJECT_CREDITS_INSUFFICIENT');
+          }
+        } else {
+          const updateResult = query(
+            'UPDATE users SET creative_credits = creative_credits - ? WHERE id = ? AND creative_credits >= ?',
+            [totalCost, req.userId, totalCost]
+          );
+          if (updateResult.changes === 0) {
+            throw new Error('CREATIVE_CREDITS_INSUFFICIENT');
+          }
+        }
+
+        query(
+          "UPDATE generation_tasks SET status = 'queued', error_message = NULL, retry_count = 0, retry_errors = '[]', result_images = '[]', started_at = NULL, completed_at = NULL, task_uuid = ? WHERE id = ?",
+          [crypto.randomUUID(), task.id]
+        );
+      });
+    } catch (err) {
+      const errMsg = (err as Error).message;
+      if (errMsg === 'PROJECT_CREDITS_INSUFFICIENT') {
         return res.status(400).json({ error: `项目积分不足，需要 ${totalCost} 积分` });
       }
-    } else {
-      const updateResult = query(
-        'UPDATE users SET creative_credits = creative_credits - ? WHERE id = ? AND creative_credits >= ?',
-        [totalCost, req.userId, totalCost]
-      );
-      if (updateResult.changes === 0) {
+      if (errMsg === 'CREATIVE_CREDITS_INSUFFICIENT') {
         return res.status(400).json({ error: `创作积分不足，需要 ${totalCost} 积分` });
       }
+      return res.status(500).json({ error: '重试任务失败' });
     }
-
-    query(
-      "UPDATE generation_tasks SET status = 'queued', error_message = NULL, retry_count = 0, retry_errors = '[]', result_images = '[]', started_at = NULL, completed_at = NULL, task_uuid = ? WHERE id = ?",
-      [crypto.randomUUID(), task.id]
-    );
 
     const updatedTask = query('SELECT * FROM generation_tasks WHERE id = ?', [task.id]);
     taskQueue.addTask(updatedTask.rows[0]);

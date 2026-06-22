@@ -2,6 +2,7 @@ import COS from 'cos-nodejs-sdk-v5'
 import fs from 'fs'
 import path from 'path'
 import { query } from '../db/index.js'
+import { decrypt } from './crypto.js'
 
 interface StorageSettings {
   storage_provider: 'local' | 'cos'
@@ -21,7 +22,7 @@ function getStorageSettings(): StorageSettings {
   return {
     storage_provider: map.storage_provider === 'cos' ? 'cos' : 'local',
     cos_secret_id: map.cos_secret_id || process.env.COS_SECRET_ID || '',
-    cos_secret_key: map.cos_secret_key || process.env.COS_SECRET_KEY || '',
+    cos_secret_key: decrypt(map.cos_secret_key || '') || process.env.COS_SECRET_KEY || '',
     cos_bucket: map.cos_bucket || process.env.COS_BUCKET || '',
     cos_region: map.cos_region || process.env.COS_REGION || '',
     cos_base_url: map.cos_base_url || '',

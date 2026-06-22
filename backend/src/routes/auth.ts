@@ -1,18 +1,29 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { query } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 export const authRouter = Router();
 
-authRouter.post('/login', async (req: AuthRequest, res) => {
+// 登录接口速率限制：每 IP 每 15 分钟最多 10 次尝试
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => ipKeyGenerator(req.ip),
+  message: { error: '登录尝试过于频繁，请 15 分钟后重试' },
+});
+
+authRouter.post('/login', loginLimiter, async (req: AuthRequest, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码不能为空' });
     }
-    const result = query('SELECT * FROM users WHERE username = ? AND is_active = true', [username]);
+    const result = query('SELECT * FROM users WHERE username = ? AND is_active = 1', [username]);
     const user = result.rows[0];
     if (!user) {
       return res.status(401).json({ error: '用户名或密码错误' });
@@ -21,9 +32,10 @@ authRouter.post('/login', async (req: AuthRequest, res) => {
     if (!valid) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
+    const JWT_SECRET = process.env.JWT_SECRET!;
     const token = jwt.sign(
       { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || 'hanxing-secret-key',
+      JWT_SECRET,
       { expiresIn: '7d' }
     );
     query(
@@ -42,6 +54,7 @@ authRouter.post('/login', async (req: AuthRequest, res) => {
       },
     });
   } catch (err) {
+    console.error('登录异常:', err);
     return res.status(500).json({ error: '登录失败' });
   }
 });
@@ -50,7 +63,7 @@ authRouter.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const result = query(
       `SELECT u.id, u.username, u.role, u.credits, u.creative_credits, u.project_credits, u.group_id,
-       g.name as group_name
+       g.name as group_name, g.allowed_pages
        FROM users u LEFT JOIN permission_groups g ON u.group_id = g.id
        WHERE u.id = ?`,
       [req.userId]

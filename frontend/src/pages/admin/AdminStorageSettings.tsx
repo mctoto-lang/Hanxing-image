@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { apiFetch } from '@/lib/api'
 import { Database, Save, TestTube2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -37,10 +38,7 @@ export default function AdminStorageSettings() {
 
   const fetchStorage = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/settings/storage', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/settings/storage')
       const data = await res.json()
       if (data.settings) {
         setStorage(data.settings)
@@ -58,14 +56,9 @@ export default function AdminStorageSettings() {
     try {
       setSaving(true)
       setMessage('')
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/settings/storage', {
+      const res = await apiFetch('/api/admin/settings/storage', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(storage),
+        body: storage,
       })
       const data = await res.json()
       if (!res.ok) {
@@ -87,14 +80,9 @@ export default function AdminStorageSettings() {
     try {
       setTesting(true)
       setMessage('')
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/settings/storage/test-cos', {
+      const res = await apiFetch('/api/admin/settings/storage/test-cos', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(storage),
+        body: storage,
       })
       const data = await res.json()
       if (!res.ok) {

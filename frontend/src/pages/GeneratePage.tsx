@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useRef, memo } from 'react'
 import { Composer } from '@/components/ui/composer'
 import { cn, toImageSrc } from '@/lib/utils'
-import { Image, ImageOff, Loader2, PanelRightClose, History, Send, ChevronDown, X, CircleAlert, RotateCcw, Copy, Check, CheckCircle2, Pin, Upload, AlertTriangle } from 'lucide-react'
+import { Image, ImageOff, Loader2, PanelRightClose, History, Send, ChevronDown, X, RotateCcw, CheckCircle2, Pin, Upload, AlertTriangle, AlertCircle } from 'lucide-react'
 import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
+import ApiErrorDialog from '@/components/ApiErrorDialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
-import { toast } from 'sonner'
 import { QueueStatusBadge } from '@/components/QueueStatusBadge'
 import {
   Popover,
@@ -21,65 +21,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-
-interface Model {
-  id: number
-  name: string
-  display_name: string
-  cost_per_image: number
-  icon_url: string | null
-  supported_sizes: { ratios: { ratio: string; width: number; height: number }[] } | null
-  supports_reference_image: boolean
-  max_reference_images: number
-}
-
-interface QueueStatus {
-  queued: number
-  processing: number
-}
-
-interface HistoryItem {
-  id: number
-  prompt: string
-  status: string
-  result_images: string[]
-  created_at: string
-  model_name: string
-  image_size: string
-  image_count: number
-  credits_charged: number
-  error_message: string | null
-  retry_count: number
-  started_at: string | null
-  completed_at: string | null
-}
-
-const defaultRatios = [
-  { ratio: '1:1', width: 1024, height: 1024 },
-  { ratio: '3:2', width: 1536, height: 1024 },
-  { ratio: '2:3', width: 1024, height: 1536 },
-  { ratio: '16:9', width: 2048, height: 1152 },
-  { ratio: '9:16', width: 1156, height: 2048 },
-]
+import { useGeneratePage, type Model, type HistoryItem, defaultRatios, getBriefError } from '@/hooks/useGeneratePage'
 
 const HISTORY_WIDTH = 320
-
-function getBriefError(msg: string | null): string {
-  if (!msg) return '生成失败'
-  const colonIdx = msg.indexOf(':')
-  if (colonIdx > 0 && colonIdx < 30) {
-    const afterColon = msg.slice(colonIdx + 1).trim()
-    const dashIdx = afterColon.indexOf(' - ')
-    if (dashIdx > 0) {
-      return msg.slice(0, colonIdx + 1) + ' ' + afterColon.slice(0, dashIdx)
-    }
-    if (afterColon.length > 30) {
-      return msg.slice(0, colonIdx + 1) + ' ' + afterColon.slice(0, 25) + '...'
-    }
-  }
-  if (msg.length > 30) return msg.slice(0, 27) + '...'
-  return msg
-}
+const PROMPT_CACHE_KEY = 'creative:prompt-draft'
 
 function ModelPopover({ models, selectedModel, onSelect, disabled }: {
   models: Model[]
@@ -226,61 +171,6 @@ function SizePopover({ imageSize, onSelect, disabled, width, height, onWidthChan
   )
 }
 
-function ErrorDialog({ open, onOpenChange, errorMessage }: {
-  open: boolean
-  onOpenChange: (v: boolean) => void
-  errorMessage: string
-}) {
-  const [copied, setCopied] = useState(false)
-
-  const rawPrefix = '原始响应: '
-  const rawIdx = errorMessage.indexOf(rawPrefix)
-  const briefError = rawIdx >= 0 ? errorMessage.slice(0, rawIdx).trimEnd().replace(/ \|$/, '') : errorMessage
-  const rawResponse = rawIdx >= 0 ? errorMessage.slice(rawIdx + rawPrefix.length) : ''
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(errorMessage)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {}
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-destructive">
-            <CircleAlert className="h-5 w-5" />
-            错误详情
-          </DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="rounded-lg bg-muted p-4">
-            <p className="text-xs text-muted-foreground mb-1.5 font-medium">错误信息</p>
-            <p className="text-sm font-mono break-all leading-relaxed">{briefError}</p>
-          </div>
-          {rawResponse && (
-            <div className="rounded-lg bg-muted p-4">
-              <p className="text-xs text-muted-foreground mb-1.5 font-medium">API 原始响应</p>
-              <pre className="text-xs font-mono break-all leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto">{rawResponse}</pre>
-            </div>
-          )}
-        </div>
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="outline" onClick={handleCopy}>
-            {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-            {copied ? '已复制' : '复制完整错误信息'}
-          </Button>
-          <Button variant="secondary" onClick={() => onOpenChange(false)}>
-            关闭
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUpload, onRemove, uploading, dragOver, onDragOver, onDragLeave, onDrop }: {
   open: boolean
   onOpenChange: (v: boolean) => void
@@ -308,7 +198,7 @@ function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUploa
             <div className="flex gap-2 flex-wrap">
               {referenceImages.map((url, idx) => (
                 <div key={idx} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-border shrink-0">
-                  <img src={toImageSrc(url)} alt="" className="w-full h-full object-cover" />
+                  <img src={toImageSrc(url, { width: 150, height: 150 })} alt="" className="w-full h-full object-cover" />
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -368,7 +258,7 @@ function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUploa
   )
 }
 
-function HistoryCard({ item, isSelected, onClick, onRetry, onErrorClick, onImageClick, onPin, isPinned }: {
+const HistoryCard = memo(function HistoryCard({ item, isSelected, onClick, onRetry, onErrorClick, onImageClick, onPin, isPinned }: {
   item: HistoryItem
   isSelected: boolean
   onClick: () => void
@@ -414,9 +304,9 @@ function HistoryCard({ item, isSelected, onClick, onRetry, onErrorClick, onImage
           {isActive ? (
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
           ) : isFailed ? (
-            <CircleAlert className="h-6 w-6 text-destructive" />
+            <AlertCircle className="h-6 w-6 text-destructive" />
           ) : item.result_images?.[0] && !imgError ? (
-            <img src={toImageSrc(item.result_images[0])} alt="" className="w-full h-full object-cover cursor-pointer" onClick={(e) => { e.stopPropagation(); onImageClick() }} onError={() => setImgError(true)} />
+            <img src={toImageSrc(item.result_images[0], { width: 150, height: 150 })} alt="" className="w-full h-full object-cover cursor-pointer" onClick={(e) => { e.stopPropagation(); onImageClick() }} onError={() => setImgError(true)} />
           ) : (
             <ImageOff className="h-6 w-6 text-muted-foreground/50" />
           )}
@@ -483,7 +373,7 @@ function HistoryCard({ item, isSelected, onClick, onRetry, onErrorClick, onImage
       )}
     </div>
   )
-}
+})
 
 function TaskDetail({ item, onClose, onRetry, onErrorClick, onImageClick }: {
   item: HistoryItem
@@ -531,7 +421,7 @@ function TaskDetail({ item, onClose, onRetry, onErrorClick, onImageClick }: {
                       <ImageOff className="h-8 w-8 text-muted-foreground/50" />
                     </div>
                   ) : (
-                    <img src={toImageSrc(img)} alt="" className="w-full h-full object-cover" onError={() => handleImageError(idx)} />
+                    <img src={toImageSrc(img, { width: 400, height: 400 })} alt="" className="w-full h-full object-cover" onError={() => handleImageError(idx)} />
                   )}
                 </div>
               )
@@ -539,7 +429,7 @@ function TaskDetail({ item, onClose, onRetry, onErrorClick, onImageClick }: {
           </div>
         ) : isFailed ? (
           <div className="flex flex-col items-center gap-3 py-6">
-            <CircleAlert className="h-8 w-8 text-destructive" />
+            <AlertCircle className="h-8 w-8 text-destructive" />
             <Button
               variant="ghost"
               onClick={onErrorClick}
@@ -571,261 +461,39 @@ function TaskDetail({ item, onClose, onRetry, onErrorClick, onImageClick }: {
 }
 
 export default function GeneratePage() {
-  const [prompt, setPrompt] = useState('')
-  const [models, setModels] = useState<Model[]>([])
-  const [selectedModel, setSelectedModel] = useState<string>('')
-  const [imageSize, setImageSize] = useState('1024x1024')
-  const [customWidth, setCustomWidth] = useState('1024')
-  const [customHeight, setCustomHeight] = useState('1024')
-  const [creativeCredits, setCreativeCredits] = useState(0)
-  const [queueStatus, setQueueStatus] = useState<QueueStatus>({ queued: 0, processing: 0 })
-  const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState('')
-  const [history, setHistory] = useState<HistoryItem[]>([])
-  const [historyLoading, setHistoryLoading] = useState(true)
-  const [showHistory, setShowHistory] = useState(true)
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
-  const [errorDialogOpen, setErrorDialogOpen] = useState(false)
-  const [errorDialogContent, setErrorDialogContent] = useState('')
-  const [previewOpen, setPreviewOpen] = useState(false)
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
-  const [previewItem, setPreviewItem] = useState<HistoryItem | null>(null)
-  const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set())
-  const [referenceImages, setReferenceImages] = useState<string[]>([])
-  const [refDialogOpen, setRefDialogOpen] = useState(false)
-  const [refUploading, setRefUploading] = useState(false)
-  const [refDragOver, setRefDragOver] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
-  const selectedModelData = models.find((m) => String(m.id) === selectedModel)
 
-  const fetchPinnedIds = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/tasks/pinned', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      setPinnedIds(new Set(data.pinned_ids || []))
-    } catch {}
-  }, [])
-
-  const handlePin = useCallback(async (taskId: number) => {
-    try {
-      const token = localStorage.getItem('token')
-      const isPinned = pinnedIds.has(taskId)
-      const res = await fetch(`/api/tasks/${taskId}/pin`, {
-        method: isPinned ? 'DELETE' : 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (res.ok) {
-        setPinnedIds(prev => {
-          const next = new Set(prev)
-          if (isPinned) next.delete(taskId)
-          else next.add(taskId)
-          return next
-        })
-      }
-    } catch {}
-  }, [pinnedIds])
-
-  const fetchModels = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/models?source=generate', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      setModels(data.models || [])
-      setSelectedModel((prev) => {
-        if (prev) return prev
-        if (data.models?.length > 0) return String(data.models[0].id)
-        return prev
-      })
-    } catch {}
-  }, [])
-
-  const fetchQueueStatus = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/tasks/queue', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      setQueueStatus(data)
-    } catch {}
-  }, [])
-
-  const fetchHistory = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/tasks/history?limit=20&source=creative', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      setHistory(data.tasks || [])
-    } catch {} finally {
-      setHistoryLoading(false)
-    }
-  }, [])
-
-  const fetchUserInfo = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      if (data.user) {
-        setCreativeCredits(data.user.creative_credits || 0)
-        localStorage.setItem('userCreativeCredits', String(data.user.creative_credits || 0))
-      }
-    } catch {}
-  }, [])
-
-  const handleRefUpload = useCallback(async (files: FileList | File[]) => {
-    const maxRef = selectedModelData?.max_reference_images || 1
-    const remaining = maxRef - referenceImages.length
-    if (remaining <= 0) return
-
-    const filesToUpload = Array.from(files).slice(0, remaining)
-    setRefUploading(true)
-    try {
-      const token = localStorage.getItem('token')
-      const uploadedUrls: string[] = []
-      for (const file of filesToUpload) {
-        const formData = new FormData()
-        formData.append('image', file)
-        const res = await fetch('/api/upload/reference-image', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        })
-        const data = await res.json()
-        if (res.ok && data.url) {
-          uploadedUrls.push(data.url)
-        }
-      }
-      setReferenceImages(prev => [...prev, ...uploadedUrls])
-    } catch {} finally {
-      setRefUploading(false)
-    }
-  }, [selectedModelData, referenceImages.length])
-
-  useEffect(() => {
-    fetchModels()
-    fetchQueueStatus()
-    fetchUserInfo()
-    fetchHistory()
-    fetchPinnedIds()
-    const interval = setInterval(() => {
-      fetchQueueStatus()
-      fetchHistory()
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [fetchModels, fetchQueueStatus, fetchUserInfo, fetchHistory, fetchPinnedIds])
-
-  const handleRetry = useCallback(async (taskId: number) => {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/tasks/${taskId}/retry`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      if (res.ok) {
-        fetchHistory()
-        fetchUserInfo()
-        fetchQueueStatus()
-      } else {
-        toast.error(data.error || '重试失败')
-      }
-    } catch {
-      toast.error('网络错误')
-    }
-  }, [fetchHistory, fetchUserInfo, fetchQueueStatus])
-
-  const openErrorDialog = useCallback((errorMsg: string) => {
-    setErrorDialogContent(errorMsg || '生成失败')
-    setErrorDialogOpen(true)
-  }, [])
-
-  const openImagePreview = useCallback((imageUrl: string, item: HistoryItem) => {
-    setPreviewImageUrl(imageUrl)
-    setPreviewItem(item)
-    setPreviewOpen(true)
-  }, [])
-
-  const handleSubmit = useCallback(async (text: string) => {
-    if (!text.trim() || !selectedModel || loading) return
-    setLoading(true)
-    setMessage('')
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/tasks/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          prompt: text,
-          model_id: parseInt(selectedModel),
-          image_size: imageSize,
-          image_count: 1,
-          source: 'creative',
-          reference_images: referenceImages.length > 0 ? referenceImages : undefined,
-        }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setMessage('任务已提交，正在排队生成...')
-        setPrompt('')
-        setReferenceImages([])
-        fetchUserInfo()
-        fetchQueueStatus()
-        if (data.task?.id) {
-          const modelObj = models.find((m) => String(m.id) === selectedModel)
-          const newTask: HistoryItem = {
-            id: data.task.id,
-            prompt: text,
-            status: 'queued',
-            result_images: [],
-            created_at: new Date().toISOString(),
-            model_name: modelObj?.display_name || '',
-            image_size: imageSize,
-            image_count: 1,
-            credits_charged: modelObj?.cost_per_image || 0,
-            error_message: null,
-            retry_count: 0,
-            started_at: null,
-            completed_at: null,
-          }
-          setHistory((prev) => [newTask, ...prev])
-          setSelectedTaskId(data.task.id)
-        }
-        fetchHistory()
-      } else {
-        setMessage(data.error || '提交失败')
-      }
-    } catch {
-      setMessage('网络错误')
-    } finally {
-      setLoading(false)
-    }
-  }, [selectedModel, imageSize, loading, fetchUserInfo, fetchQueueStatus, fetchHistory, models])
-
-  useEffect(() => {
-    if (!message) return
-    const timer = setTimeout(() => setMessage(''), 3000)
-    return () => clearTimeout(timer)
-  }, [message])
-
-  const totalCost = selectedModelData?.cost_per_image || 0
-  const isError = message.includes('失败') || message.includes('错误')
-  const isWarning = !isError && (message.includes('不足') || message.includes('已达到') || message.includes('网络错误'))
-  const selectedTask = history.find((h) => h.id === selectedTaskId) || null
-
-  void creativeCredits
+  const {
+    prompt, setPrompt,
+    models, selectedModel, setSelectedModel,
+    imageSize, setImageSize,
+    customWidth, setCustomWidth,
+    customHeight, setCustomHeight,
+    selectedModelData,
+    queueStatus,
+    loading, message,
+    history, historyLoading,
+    showHistory, setShowHistory,
+    selectedTaskId, setSelectedTaskId,
+    errorDialogOpen, setErrorDialogOpen,
+    errorDialogContent,
+    previewOpen, setPreviewOpen,
+    previewImageUrl, previewItem,
+    pinnedIds, handlePin,
+    referenceImages, setReferenceImages,
+    refDialogOpen, setRefDialogOpen,
+    refUploading, refDragOver, setRefDragOver,
+    totalCost, isError, isWarning,
+    selectedTask, sortedHistory,
+    handleRetry, openErrorDialog, openImagePreview,
+    handleSubmit, handleRefUpload,
+  } = useGeneratePage({
+    modelSource: 'generate',
+    taskSource: 'creative',
+    creditField: 'creative_credits',
+    creditStorageKey: 'userCreativeCredits',
+    promptCacheKey: PROMPT_CACHE_KEY,
+  })
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -847,7 +515,7 @@ export default function GeneratePage() {
               <QueueStatusBadge queued={queueStatus.queued} processing={queueStatus.processing} />
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setShowHistory(false)}
                 className="text-muted-foreground"
               >
@@ -872,13 +540,7 @@ export default function GeneratePage() {
               <p className="text-muted-foreground text-sm text-center py-8">暂无生成记录</p>
             ) : (
               <div className="flex flex-col">
-                {[...history]
-                  .sort((a, b) => {
-                    const aPinned = pinnedIds.has(a.id) ? 1 : 0
-                    const bPinned = pinnedIds.has(b.id) ? 1 : 0
-                    return bPinned - aPinned
-                  })
-                  .map((item) => (
+                {sortedHistory.map((item) => (
                   <HistoryCard
                     key={item.id}
                     item={item}
@@ -912,7 +574,7 @@ export default function GeneratePage() {
                 !isError && !isWarning && !loading && 'border-emerald-500/50 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400',
               )}
             >
-              {loading ? <Loader2 className="size-4 animate-spin" /> : isError ? <CircleAlert className="size-4" /> : isWarning ? <AlertTriangle className="size-4" /> : <CheckCircle2 className="size-4" />}
+              {loading ? <Loader2 className="size-4 animate-spin" /> : isError ? <AlertCircle className="size-4" /> : isWarning ? <AlertTriangle className="size-4" /> : <CheckCircle2 className="size-4" />}
               <AlertTitle>{loading ? '正在提交任务...' : message}</AlertTitle>
             </Alert>
           </div>
@@ -951,7 +613,7 @@ export default function GeneratePage() {
               <div className="flex gap-2 mb-3 flex-wrap">
                 {referenceImages.map((url, idx) => (
                   <div key={idx} className="relative group w-14 h-14 rounded-lg overflow-hidden border border-border shrink-0">
-                    <img src={toImageSrc(url)} alt="" className="w-full h-full object-cover" />
+                    <img src={toImageSrc(url, { width: 150, height: 150 })} alt="" className="w-full h-full object-cover" />
                     <Button
                       variant="ghost"
                       size="icon-xs"
@@ -1013,7 +675,7 @@ export default function GeneratePage() {
 
               <div className="flex items-center gap-2">
                 <span className="text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
-                  消耗 {totalCost} 创作积分
+                  消张{totalCost} 创作积分
                 </span>
                 <Button
                   variant="ghost"
@@ -1040,7 +702,7 @@ export default function GeneratePage() {
         </div>
       </div>
 
-      <ErrorDialog
+      <ApiErrorDialog
         open={errorDialogOpen}
         onOpenChange={setErrorDialogOpen}
         errorMessage={errorDialogContent}

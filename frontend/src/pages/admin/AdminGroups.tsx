@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { apiFetch } from '@/lib/api'
 import { Plus, Pencil, Coins, Activity, ArrowUp, ArrowUpDown, Eye, ShieldCheck, Shield, MoreHorizontal } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -42,6 +43,7 @@ interface Group {
   priority: number
   allowed_models: string[]
   managed_models: string[]
+  allowed_pages: string[]
 }
 
 interface Model {
@@ -58,7 +60,15 @@ const emptyForm = {
   max_concurrent: '2',
   priority: '0',
   allowed_models: [] as string[],
+  allowed_pages: [] as string[],
 }
+
+const PAGE_OPTIONS = [
+  { key: 'generate', label: '自由创作' },
+  { key: 'canvas', label: '项目创作' },
+  { key: 'history', label: '资产管理' },
+  { key: 'workspace', label: '批量生图' },
+]
 
 export default function AdminGroups() {
   const [groups, setGroups] = useState<Group[]>([])
@@ -69,10 +79,7 @@ export default function AdminGroups() {
 
   const fetchGroups = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/groups', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/groups')
       const data = await res.json()
       setGroups(data.groups || [])
     } catch {}
@@ -80,10 +87,7 @@ export default function AdminGroups() {
 
   const fetchModels = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/models/all', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/models/all')
       const data = await res.json()
       setModels(data.models || [])
     } catch {}
@@ -110,6 +114,7 @@ export default function AdminGroups() {
       max_concurrent: String(group.max_concurrent),
       priority: String(group.priority),
       allowed_models: group.allowed_models || [],
+      allowed_pages: group.allowed_pages || [],
     })
     setDialogOpen(true)
   }
@@ -127,18 +132,28 @@ export default function AdminGroups() {
     })
   }
 
+  const togglePage = (pageKey: string) => {
+    setForm((prev) => {
+      const current = prev.allowed_pages
+      return {
+        ...prev,
+        allowed_pages: current.includes(pageKey)
+          ? current.filter((page) => page !== pageKey)
+          : [...current, pageKey],
+      }
+    })
+  }
+
   const handleSave = async () => {
     try {
-      const token = localStorage.getItem('token')
       const method = editingGroup ? 'PUT' : 'POST'
       const url = editingGroup
         ? `/api/admin/groups/${editingGroup.id}`
         : '/api/admin/groups'
 
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
+        body: {
           name: form.name,
           description: form.description,
           max_credits: parseInt(form.initial_creative_credits),
@@ -148,7 +163,8 @@ export default function AdminGroups() {
           max_concurrent: parseInt(form.max_concurrent),
           priority: parseInt(form.priority),
           allowed_models: form.allowed_models,
-        }),
+          allowed_pages: form.allowed_pages,
+        },
       })
       if (!res.ok) {
         const data = await res.json()
@@ -260,6 +276,25 @@ export default function AdminGroups() {
           {row.original.priority}
         </Badge>
       ),
+    },
+    {
+      accessorKey: 'allowed_pages',
+      header: '可查看页面',
+      cell: ({ row }) => {
+        const allowedPages = row.original.allowed_pages || []
+        const visiblePages = allowedPages.length > 0
+          ? PAGE_OPTIONS.filter(page => allowedPages.includes(page.key))
+          : PAGE_OPTIONS
+        return (
+          <div className="flex max-w-[260px] flex-wrap gap-1">
+            {visiblePages.map(page => (
+              <Badge key={page.key} variant="outline" className="text-xs bg-blue-50 text-blue-600 border-blue-200">
+                {page.label}
+              </Badge>
+            ))}
+          </div>
+        )
+      },
     },
     {
       id: 'actions',
@@ -417,6 +452,34 @@ export default function AdminGroups() {
                 onChange={(e) => setForm({ ...form, priority: e.target.value })}
               />
               <p className="text-[11px] text-muted-foreground">数值越高，队列中越优先处理。0 为默认优先级</p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label className="flex items-center gap-1.5">
+                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                可查看页面
+              </Label>
+              <div className="flex gap-2 flex-wrap">
+                {PAGE_OPTIONS.map((page) => {
+                  const isSelected = form.allowed_pages.includes(page.key)
+                  return (
+                    <Button
+                      key={page.key}
+                      variant="outline"
+                      size="xs"
+                      onClick={() => togglePage(page.key)}
+                      className={`rounded-lg ${
+                        isSelected
+                          ? 'border-primary bg-primary/10 text-primary font-medium'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {page.label}
+                    </Button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground">该组用户可以查看的页面，不选则允许所有</p>
             </div>
 
             <div className="flex flex-col gap-2">

@@ -2,8 +2,9 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { query } from '../db/index.js';
-import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middleware/auth.js';
 import { testCosConnection } from '../services/cos.js';
+import { encrypt, decrypt } from '../services/crypto.js';
 
 export const adminRouter = Router();
 
@@ -22,12 +23,34 @@ function getSystemSettings() {
   };
 }
 
-adminRouter.get('/dashboard', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+/**
+ * 返回给前端的设置（隐藏敏感字段）
+ */
+function getSystemSettingsForClient() {
+  const settings = getSystemSettings();
+  return {
+    ...settings,
+    cos_secret_key: settings.cos_secret_key ? '******' : '',
+  };
+}
+
+/**
+ * 获取解密后的存储设置（供内部使用）
+ */
+function getDecryptedStorageSettings() {
+  const settings = getSystemSettings();
+  return {
+    ...settings,
+    cos_secret_key: decrypt(settings.cos_secret_key),
+  };
+}
+
+adminRouter.get('/dashboard', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const userCount = query('SELECT COUNT(*) as count FROM users WHERE role = ?', ['user']);
     const taskCount = query('SELECT COUNT(*) as count FROM generation_tasks');
     const todayTasks = query(
-      "SELECT COUNT(*) as count FROM generation_tasks WHERE created_at >= date('now')"
+      "SELECT COUNT(*) as count FROM generation_tasks WHERE date(created_at, 'localtime') >= date('now', 'localtime')"
     );
     const queuedTasks = query(
       "SELECT COUNT(*) as count FROM generation_tasks WHERE status = 'queued'"
@@ -43,15 +66,15 @@ adminRouter.get('/dashboard', authMiddleware, adminMiddleware, async (_req: Auth
   }
 });
 
-adminRouter.get('/dashboard/trend', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.get('/dashboard/trend', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days as string) || 7, 1), 30);
     const result = query(
-      `SELECT date(created_at) as date, COUNT(*) as count
+      `SELECT date(created_at, 'localtime') as date, COUNT(*) as count
        FROM generation_tasks
-       WHERE created_at >= date('now', ? || ' days')
-       GROUP BY date(created_at)
-       ORDER BY date(created_at) ASC`,
+       WHERE date(created_at, 'localtime') >= date('now', 'localtime', ? || ' days')
+       GROUP BY date(created_at, 'localtime')
+       ORDER BY date(created_at, 'localtime') ASC`,
       [`-${days}`]
     );
     const trendMap = Object.fromEntries(result.rows.map((row: any) => [row.date, parseInt(row.count)]));
@@ -60,7 +83,8 @@ adminRouter.get('/dashboard/trend', authMiddleware, adminMiddleware, async (req:
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().slice(0, 10);
+      // 使用本地日期（与数据库 localtime 一致），避免 toISOString 返回 UTC 日期
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       trend.push({ date: dateStr, count: trendMap[dateStr] || 0 });
     }
     return res.json({ trend });
@@ -69,7 +93,7 @@ adminRouter.get('/dashboard/trend', authMiddleware, adminMiddleware, async (req:
   }
 });
 
-adminRouter.get('/dashboard/models-status', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+adminRouter.get('/dashboard/models-status', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const models = query('SELECT id, name, display_name, icon_url, is_active FROM models ORDER BY id ASC');
     const modelsStatus = models.rows.map((model: any) => {
@@ -88,10 +112,12 @@ adminRouter.get('/dashboard/models-status', authMiddleware, adminMiddleware, asy
         completed_at: task.completed_at,
         username: task.username,
       }));
-      const hasFailed = tasks.some((t: any) => t.status === 'failed');
+      const failedCount = tasks.filter((t: any) => t.status === 'failed').length;
       const hasQueuedOrProcessing = tasks.some((t: any) => t.status === 'queued' || t.status === 'processing');
+      // 只有最近5个任务中3个以上失败，或失败率超过50%才标记为error
+      const recent5Failed = tasks.slice(0, 5).filter((t: any) => t.status === 'failed').length;
       let status: 'normal' | 'queued' | 'error' = 'normal';
-      if (hasFailed) status = 'error';
+      if (recent5Failed >= 3 || (tasks.length >= 5 && failedCount / tasks.length > 0.5)) status = 'error';
       else if (hasQueuedOrProcessing) status = 'queued';
       return {
         id: model.id,
@@ -109,15 +135,15 @@ adminRouter.get('/dashboard/models-status', authMiddleware, adminMiddleware, asy
   }
 });
 
-adminRouter.get('/settings/storage', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+adminRouter.get('/settings/storage', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
-    return res.json({ settings: getSystemSettings() });
+    return res.json({ settings: getSystemSettingsForClient() });
   } catch {
     return res.status(500).json({ error: '获取存储设置失败' });
   }
 });
 
-adminRouter.put('/settings/storage', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.put('/settings/storage', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const {
       storage_provider,
@@ -130,16 +156,34 @@ adminRouter.put('/settings/storage', authMiddleware, adminMiddleware, async (req
       local_image_prefix,
     } = req.body;
 
-    const settings = {
+    console.log('[存储设置] 保存请求:', {
+      storage_provider,
+      cos_secret_id: cos_secret_id ? `${String(cos_secret_id).substring(0, 4)}***` : '(empty)',
+      cos_secret_key: cos_secret_key ? (cos_secret_key === '******' ? '(masked)' : '(new value)') : '(empty)',
+      cos_bucket,
+      cos_region,
+      cos_base_url,
+    });
+
+    // 获取当前设置，用于判断是否需要更新 secret_key
+    const currentSettings = getSystemSettings();
+
+    const settings: Record<string, string> = {
       storage_provider: storage_provider === 'cos' ? 'cos' : 'local',
       cos_secret_id: String(cos_secret_id || ''),
-      cos_secret_key: String(cos_secret_key || ''),
       cos_bucket: String(cos_bucket || ''),
       cos_region: String(cos_region || ''),
       cos_base_url: String(cos_base_url || ''),
       cos_image_prefix: String(cos_image_prefix || 'image/'),
       local_image_prefix: String(local_image_prefix || 'image/'),
     };
+
+    // 仅当提供了非掩码值时才更新 secret_key
+    if (cos_secret_key && cos_secret_key !== '******') {
+      settings.cos_secret_key = encrypt(String(cos_secret_key));
+    } else {
+      settings.cos_secret_key = currentSettings.cos_secret_key;
+    }
 
     Object.entries(settings).forEach(([key, value]) => {
       query(
@@ -149,13 +193,14 @@ adminRouter.put('/settings/storage', authMiddleware, adminMiddleware, async (req
       );
     });
 
-    return res.json({ settings: getSystemSettings() });
-  } catch {
-    return res.status(500).json({ error: '保存存储设置失败' });
+    return res.json({ settings: getSystemSettingsForClient() });
+  } catch (err) {
+    console.error('[存储设置] 保存失败:', err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : '保存存储设置失败' });
   }
 });
 
-adminRouter.post('/settings/storage/test-cos', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.post('/settings/storage/test-cos', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const {
       storage_provider,
@@ -168,15 +213,21 @@ adminRouter.post('/settings/storage/test-cos', authMiddleware, adminMiddleware, 
       local_image_prefix,
     } = req.body ?? {};
 
+    // 如果前端传来的是掩码值，使用已存储的解密值
+    const currentDecrypted = getDecryptedStorageSettings();
+    const actualSecretKey = (!cos_secret_key || cos_secret_key === '******')
+      ? currentDecrypted.cos_secret_key
+      : String(cos_secret_key);
+
     const result = await testCosConnection({
       storage_provider: storage_provider === 'cos' ? 'cos' : 'local',
-      cos_secret_id: String(cos_secret_id || ''),
-      cos_secret_key: String(cos_secret_key || ''),
-      cos_bucket: String(cos_bucket || ''),
-      cos_region: String(cos_region || ''),
-      cos_base_url: String(cos_base_url || ''),
-      cos_image_prefix: String(cos_image_prefix || 'image/'),
-      local_image_prefix: String(local_image_prefix || 'image/'),
+      cos_secret_id: String(cos_secret_id || currentDecrypted.cos_secret_id),
+      cos_secret_key: actualSecretKey,
+      cos_bucket: String(cos_bucket || currentDecrypted.cos_bucket),
+      cos_region: String(cos_region || currentDecrypted.cos_region),
+      cos_base_url: String(cos_base_url || currentDecrypted.cos_base_url),
+      cos_image_prefix: String(cos_image_prefix || currentDecrypted.cos_image_prefix || 'image/'),
+      local_image_prefix: String(local_image_prefix || currentDecrypted.local_image_prefix || 'image/'),
     });
 
     return res.json(result);
@@ -185,7 +236,7 @@ adminRouter.post('/settings/storage/test-cos', authMiddleware, adminMiddleware, 
   }
 });
 
-adminRouter.get('/groups', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+adminRouter.get('/groups', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query('SELECT * FROM permission_groups ORDER BY priority DESC');
     return res.json({ groups: result.rows });
@@ -194,13 +245,13 @@ adminRouter.get('/groups', authMiddleware, adminMiddleware, async (_req: AuthReq
   }
 });
 
-adminRouter.post('/groups', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.post('/groups', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
-    const { name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models } = req.body;
+    const { name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models, allowed_pages } = req.body;
     query(
-      `INSERT INTO permission_groups (name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, description || 'user', max_credits || 100, daily_credits || 0, initial_creative_credits || 0, initial_project_credits || 0, max_concurrent || 2, priority || 0, JSON.stringify(allowed_models || [])]
+      `INSERT INTO permission_groups (name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models, allowed_pages)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name, description || 'user', max_credits || 100, daily_credits || 0, initial_creative_credits || 0, initial_project_credits || 0, max_concurrent || 2, priority || 0, JSON.stringify(allowed_models || []), JSON.stringify(allowed_pages || [])]
     );
     const result = query('SELECT * FROM permission_groups WHERE name = ?', [name]);
     const group = result.rows[0];
@@ -217,17 +268,17 @@ adminRouter.post('/groups', authMiddleware, adminMiddleware, async (req: AuthReq
   }
 });
 
-adminRouter.put('/groups/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.put('/groups/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
-    const { name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models } = req.body;
+    const { name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, allowed_models, allowed_pages } = req.body;
     query(
       `UPDATE permission_groups SET name = COALESCE(?, name), description = COALESCE(?, description),
        max_credits = COALESCE(?, max_credits), daily_credits = COALESCE(?, daily_credits),
        initial_creative_credits = COALESCE(?, initial_creative_credits), initial_project_credits = COALESCE(?, initial_project_credits),
        max_concurrent = COALESCE(?, max_concurrent), priority = COALESCE(?, priority),
-       allowed_models = COALESCE(?, allowed_models),
+       allowed_models = COALESCE(?, allowed_models), allowed_pages = COALESCE(?, allowed_pages),
        updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, JSON.stringify(allowed_models), req.params.id]
+      [name, description, max_credits, daily_credits, initial_creative_credits, initial_project_credits, max_concurrent, priority, JSON.stringify(allowed_models), JSON.stringify(allowed_pages), req.params.id]
     );
     const result = query('SELECT * FROM permission_groups WHERE id = ?', [req.params.id]);
     if (result.rows.length === 0) {
@@ -244,7 +295,7 @@ adminRouter.put('/groups/:id', authMiddleware, adminMiddleware, async (req: Auth
   }
 });
 
-adminRouter.delete('/groups/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.delete('/groups/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     // 检查是否有用户在该权限组中
     const userCheck = query('SELECT COUNT(*) as count FROM users WHERE group_id = ?', [req.params.id]);
@@ -262,7 +313,7 @@ adminRouter.delete('/groups/:id', authMiddleware, adminMiddleware, async (req: A
   }
 });
 
-adminRouter.get('/images', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.get('/images', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 30;
@@ -279,16 +330,16 @@ adminRouter.get('/images', authMiddleware, adminMiddleware, async (req: AuthRequ
       params.push(username);
     }
     if (startDate) {
-      whereClause += ' AND t.created_at >= ?';
+      whereClause += " AND date(t.created_at, 'localtime') >= ?";
       params.push(startDate);
     }
     if (endDate) {
-      whereClause += ' AND t.created_at <= ?';
-      params.push(endDate + ' 23:59:59');
+      whereClause += " AND date(t.created_at, 'localtime') <= ?";
+      params.push(endDate);
     }
 
     const result = query(
-      `SELECT t.id, t.prompt, t.status, t.result_images, t.created_at, t.started_at, t.completed_at,
+      `SELECT t.id, t.prompt, t.status, t.result_images, t.image_size, t.created_at, t.started_at, t.completed_at,
        u.username, m.display_name as model_name
        FROM generation_tasks t
        JOIN users u ON t.user_id = u.id
@@ -297,13 +348,21 @@ adminRouter.get('/images', authMiddleware, adminMiddleware, async (req: AuthRequ
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
-    return res.json({ images: result.rows, page, limit });
+    const totalResult = query(
+      `SELECT COUNT(*) as count
+       FROM generation_tasks t
+       JOIN users u ON t.user_id = u.id
+       ${whereClause}`,
+      params
+    );
+    const total = parseInt(totalResult.rows[0].count);
+    return res.json({ images: result.rows, total, page, limit });
   } catch {
     return res.status(500).json({ error: '获取图片列表失败' });
   }
 });
 
-adminRouter.get('/logs/login', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.get('/logs/login', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
@@ -313,20 +372,42 @@ adminRouter.get('/logs/login', authMiddleware, adminMiddleware, async (req: Auth
       `SELECT l.*, u.username FROM login_logs l JOIN users u ON l.user_id = u.id ORDER BY l.login_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
-    return res.json({ logs: result.rows, page, limit });
+    const total = query('SELECT COUNT(*) as count FROM login_logs');
+    return res.json({ logs: result.rows, total: parseInt(total.rows[0].count), page, limit });
   } catch {
     return res.status(500).json({ error: '获取登录日志失败' });
   }
 });
 
-adminRouter.get('/logs/tasks', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.get('/logs/chat', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = (page - 1) * limit;
 
     const result = query(
-      `SELECT t.id, t.prompt, t.status, t.credits_charged, t.credits_type, t.source, t.retry_count, t.error_message, t.retry_errors,
+      `SELECT l.*, u.username
+       FROM workspace_api_logs l
+       LEFT JOIN users u ON l.user_id = u.id
+       WHERE l.api_type != 'image'
+       ORDER BY l.created_at DESC LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+    const total = query("SELECT COUNT(*) as count FROM workspace_api_logs WHERE api_type != 'image'");
+    return res.json({ logs: result.rows, total: parseInt(total.rows[0].count), page, limit });
+  } catch {
+    return res.status(500).json({ error: '获取对话日志失败' });
+  }
+});
+
+adminRouter.get('/logs/tasks', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
+
+    const result = query(
+      `SELECT t.id, t.prompt, t.status, t.credits_charged, t.credits_type, t.source, t.task_type, t.retry_count, t.error_message, t.retry_errors,
        t.image_size, t.image_count, t.result_images, t.created_at, t.started_at, t.completed_at,
        u.username, m.display_name as model_name
        FROM generation_tasks t
@@ -335,13 +416,14 @@ adminRouter.get('/logs/tasks', authMiddleware, adminMiddleware, async (req: Auth
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
-    return res.json({ logs: result.rows, page, limit });
+    const total = query('SELECT COUNT(*) as count FROM generation_tasks');
+    return res.json({ tasks: result.rows, total: parseInt(total.rows[0].count), page, limit });
   } catch {
     return res.status(500).json({ error: '获取任务日志失败' });
   }
 });
 
-adminRouter.get('/logs/tasks/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.get('/logs/tasks/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const result = query(
       `SELECT t.*, u.username, m.display_name as model_name
@@ -367,7 +449,7 @@ adminRouter.get('/logs/tasks/:id', authMiddleware, adminMiddleware, async (req: 
   }
 });
 
-adminRouter.delete('/logs/tasks/:id', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.delete('/logs/tasks/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const taskId = req.params.id;
     const taskResult = query('SELECT result_images FROM generation_tasks WHERE id = ?', [taskId]);
@@ -386,7 +468,7 @@ adminRouter.delete('/logs/tasks/:id', authMiddleware, adminMiddleware, async (re
     }
 
     query('DELETE FROM api_call_logs WHERE task_id = ?', [taskId]);
-    query('DELETE FROM gallery WHERE task_id = ?', [taskId]);
+    query('UPDATE card_images SET generation_task_id = NULL WHERE generation_task_id = ?', [taskId]);
     query('DELETE FROM generation_tasks WHERE id = ?', [taskId]);
 
     return res.json({ message: '任务及关联图片已删除' });
@@ -395,42 +477,8 @@ adminRouter.delete('/logs/tasks/:id', authMiddleware, adminMiddleware, async (re
   }
 });
 
-adminRouter.post('/gallery/:taskId/toggle', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
-  try {
-    const taskResult = query('SELECT * FROM generation_tasks WHERE id = ?', [req.params.taskId]);
-    if (taskResult.rows.length === 0) {
-      return res.status(404).json({ error: '任务不存在' });
-    }
-    const task = taskResult.rows[0];
-    const images = task.result_images || [];
-    if (!images || images.length === 0) {
-      return res.status(400).json({ error: '该任务没有生成的图片' });
-    }
-    // 检查是否所有图片都已在画廊中
-    const allInGallery = images.every((imageUrl: string) => {
-      const existing = query('SELECT * FROM gallery WHERE task_id = ? AND image_url = ?', [task.id, imageUrl]);
-      return existing.rows.length > 0;
-    });
-
-    if (allInGallery) {
-      // 全部移除
-      for (const imageUrl of images) {
-        query('DELETE FROM gallery WHERE task_id = ? AND image_url = ?', [task.id, imageUrl]);
-      }
-    } else {
-      // 全部添加
-      for (const imageUrl of images) {
-        query('INSERT OR IGNORE INTO gallery (task_id, image_url, is_public) VALUES (?, ?, true)', [task.id, imageUrl]);
-      }
-    }
-    return res.json({ message: '画廊状态已更新', inGallery: !allInGallery });
-  } catch {
-    return res.status(500).json({ error: '更新画廊状态失败' });
-  }
-});
-
 // 系统设置 API
-adminRouter.get('/settings', authMiddleware, adminMiddleware, async (_req: AuthRequest, res) => {
+adminRouter.get('/settings', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query('SELECT key, value FROM system_settings WHERE key IN (?, ?)', ['queue_green_threshold', 'queue_yellow_threshold']);
     const map = Object.fromEntries(result.rows.map((row) => [row.key, parseInt(row.value) || 10]));
@@ -443,7 +491,7 @@ adminRouter.get('/settings', authMiddleware, adminMiddleware, async (_req: AuthR
   }
 });
 
-adminRouter.put('/settings', authMiddleware, adminMiddleware, async (req: AuthRequest, res) => {
+adminRouter.put('/settings', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { queue_green_threshold, queue_yellow_threshold } = req.body;
 

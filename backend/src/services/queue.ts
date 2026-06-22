@@ -1,5 +1,6 @@
 import { query } from '../db/index.js';
 import { uploadImage, generateFilename } from './cos.js';
+import { decrypt } from './crypto.js';
 
 interface Task {
   id: number;
@@ -12,6 +13,7 @@ interface Task {
   priority: number;
   credits_charged: number;
   credits_type: string;
+  source: string;
   retry_count: number;
   reference_images?: string;
   started_at?: string;
@@ -145,7 +147,15 @@ class TaskQueue {
           "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
           [errorMsg, task.id]
         );
-        // 退还积分
+        if (task.source === 'workspace') {
+          const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
+          if (cardImageRow.rows[0]) {
+            query(
+              "UPDATE card_images SET status = 'failed', error_message = ? WHERE id = ?",
+              [errorMsg, cardImageRow.rows[0].id]
+            );
+          }
+        }
         if (task.credits_type === 'project') {
           query('UPDATE users SET project_credits = project_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
         } else {
@@ -169,6 +179,13 @@ class TaskQueue {
         [task.id]
       );
 
+      if (task.source === 'workspace') {
+        const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
+        if (cardImageRow.rows[0]) {
+          query("UPDATE card_images SET status = 'generating' WHERE id = ?", [cardImageRow.rows[0].id]);
+        }
+      }
+
       if (!model || !model.api_endpoint) {
         throw new Error('模型API未配置');
       }
@@ -176,7 +193,6 @@ class TaskQueue {
       const imageUrls = await this.callImageAPI(model, task);
       const elapsed = Date.now() - startTime;
 
-      // 更新调用记录为成功
       query(
         "UPDATE api_call_logs SET status = 'success', response_summary = ?, elapsed_ms = ? WHERE id = ?",
         [JSON.stringify({ imageCount: imageUrls.length }), elapsed, callLogId]
@@ -186,6 +202,16 @@ class TaskQueue {
         "UPDATE generation_tasks SET status = 'completed', result_images = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
         [JSON.stringify(imageUrls), task.id]
       );
+
+      if (task.source === 'workspace') {
+        const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
+        if (cardImageRow.rows[0]) {
+          query(
+            "UPDATE card_images SET status = 'completed', image_url = ?, error_message = NULL WHERE id = ?",
+            [imageUrls[0] || '', cardImageRow.rows[0].id]
+          );
+        }
+      }
 
       console.log(`[队列] 任务 #${task.id} 完成，生成 ${imageUrls.length} 张图片，耗时 ${(elapsed / 1000).toFixed(1)}秒`);
     } catch (err) {
@@ -220,6 +246,15 @@ class TaskQueue {
           "UPDATE generation_tasks SET status = 'queued', error_message = ?, retry_count = ?, retry_errors = ? WHERE id = ?",
           [errorMessage, newRetryCount, retryErrorsJson, task.id]
         );
+        if (task.source === 'workspace') {
+          const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
+          if (cardImageRow.rows[0]) {
+            query(
+              "UPDATE card_images SET status = 'pending', error_message = ? WHERE id = ?",
+              [errorMessage, cardImageRow.rows[0].id]
+            );
+          }
+        }
         console.log(`[队列] 任务 #${task.id} ${errorType} (重试 ${newRetryCount}/${maxRetries}): ${rawMessage}，耗时 ${(elapsed / 1000).toFixed(1)}秒`);
       } else {
         const finalError = `${errorMessage} | 已重试${maxRetries}次均失败`;
@@ -227,6 +262,15 @@ class TaskQueue {
           "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP, retry_errors = ? WHERE id = ?",
           [finalError, retryErrorsJson, task.id]
         );
+        if (task.source === 'workspace') {
+          const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
+          if (cardImageRow.rows[0]) {
+            query(
+              "UPDATE card_images SET status = 'failed', error_message = ? WHERE id = ?",
+              [finalError, cardImageRow.rows[0].id]
+            );
+          }
+        }
         if (task.credits_type === 'project') {
           query(
             'UPDATE users SET project_credits = project_credits + ? WHERE id = ?',
@@ -279,24 +323,27 @@ class TaskQueue {
       } catch { return {}; }
     })();
 
+    // 解密 API Key
+    const apiKey = decrypt(model.api_key_encrypted || '');
+
     console.log(`[API] 使用 ${apiFormat} 格式调用 | model=${model.name}`);
 
     switch (apiFormat) {
       case 'gemini':
-        return this.callGeminiAPI(model, task, extraConfig);
+        return this.callGeminiAPI(model, task, extraConfig, apiKey);
       case 'midjourney':
-        return this.callMidjourneyAPI(model, task, extraConfig);
+        return this.callMidjourneyAPI(model, task, extraConfig, apiKey);
       case 'grs':
-        return this.callGRSAPI(model, task, extraConfig);
+        return this.callGRSAPI(model, task, extraConfig, apiKey);
       case 'yunwu_mj':
-        return this.callYunwuMJAPI(model, task, extraConfig);
+        return this.callYunwuMJAPI(model, task, extraConfig, apiKey);
       default:
-        return this.callOpenAIAPI(model, task, extraConfig);
+        return this.callOpenAIAPI(model, task, extraConfig, apiKey);
     }
   }
 
   // OpenAI GPT Image 格式
-  private async callOpenAIAPI(model: any, task: Task, extraConfig: ExtraConfig): Promise<string[]> {
+  private async callOpenAIAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
     const imageUrls: string[] = [];
     const hasReferenceImages = !!task.reference_images && (() => {
       try {
@@ -336,7 +383,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -348,7 +395,7 @@ class TaskQueue {
   }
 
   // Gemini Nano Banana 简化格式
-  private async callGeminiAPI(model: any, task: Task, extraConfig: ExtraConfig): Promise<string[]> {
+  private async callGeminiAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
     const imageUrls: string[] = [];
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -387,7 +434,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -413,7 +460,7 @@ class TaskQueue {
   }
 
   // Midjourney 格式（异步 + 轮询）
-  private async callMidjourneyAPI(model: any, task: Task, extraConfig: ExtraConfig): Promise<string[]> {
+  private async callMidjourneyAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
     const imageUrls: string[] = [];
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -460,7 +507,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -480,7 +527,7 @@ class TaskQueue {
       console.log(`[MJ] 任务已提交 | taskId=${taskId} | 开始轮询...`);
 
       // 轮询获取结果
-      const imageUrl = await this.pollMidjourneyResult(model.api_endpoint, model.api_key_encrypted, taskId, task.id, i);
+      const imageUrl = await this.pollMidjourneyResult(model.api_endpoint, apiKey, taskId, task.id, i);
       imageUrls.push(imageUrl);
     }
 
@@ -557,7 +604,7 @@ class TaskQueue {
   }
 
   // GRS 中转站统一格式（nano-banana / gpt-image-2 等）
-  private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig): Promise<string[]> {
+  private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
     const imageUrls: string[] = [];
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -604,7 +651,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -626,7 +673,7 @@ class TaskQueue {
       else if (data.id && (data.status === 'running' || data.status === 'pending' || replyType === 'async')) {
         const grsTaskId = data.id;
         console.log(`[GRS] 异步任务已提交 | taskId=${grsTaskId} | 开始轮询...`);
-        const imageUrl = await this.pollGRSResult(model.api_endpoint, model.api_key_encrypted, grsTaskId, task.id, i);
+        const imageUrl = await this.pollGRSResult(model.api_endpoint, apiKey, grsTaskId, task.id, i);
         imageUrls.push(imageUrl);
       }
       // 其他情况：尝试通用解析
@@ -717,7 +764,7 @@ class TaskQueue {
   }
 
   // 云雾 Midjourney 格式
-  private async callYunwuMJAPI(model: any, task: Task, extraConfig: ExtraConfig): Promise<string[]> {
+  private async callYunwuMJAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
     const imageUrls: string[] = [];
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -767,7 +814,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, model.api_key_encrypted, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -787,7 +834,7 @@ class TaskQueue {
       console.log(`[云雾MJ] 任务已提交 | taskId=${taskId} | 开始轮询...`);
 
       // 轮询获取结果
-      const imageUrl = await this.pollYunwuMJResult(model.api_endpoint, model.api_key_encrypted, taskId, task.id, i);
+      const imageUrl = await this.pollYunwuMJResult(model.api_endpoint, apiKey, taskId, task.id, i);
       imageUrls.push(imageUrl);
     }
 

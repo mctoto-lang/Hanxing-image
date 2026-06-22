@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { apiFetch } from '@/lib/api'
 import { UserPlus, Coins, ShieldCheck, ShieldOff, ArrowUpDown, MoreHorizontal, KeyRound, UserCog } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -81,10 +82,7 @@ export default function AdminUsers() {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/users', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/users')
       const data = await res.json()
       setUsers(data.users || [])
     } catch {}
@@ -92,10 +90,7 @@ export default function AdminUsers() {
 
   const fetchGroups = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/groups', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/groups')
       const data = await res.json()
       setGroups(data.groups || [])
     } catch {}
@@ -109,19 +104,14 @@ export default function AdminUsers() {
   const handleCreateUser = async () => {
     if (!newUsername.trim() || !newPassword.trim()) return
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/users', {
+      const res = await apiFetch('/api/admin/users', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+        body: {
           username: newUsername,
           password: newPassword,
           group_id: newGroupId ? parseInt(newGroupId) : null,
           role: newRole,
-        }),
+        },
       })
       if (res.ok) {
         setCreateOpen(false)
@@ -142,17 +132,12 @@ export default function AdminUsers() {
   const handleUpdateCredits = async () => {
     if (!editUserId) return
     try {
-      const token = localStorage.getItem('token')
-      await fetch(`/api/admin/users/${editUserId}/credits`, {
+      await apiFetch(`/api/admin/users/${editUserId}/credits`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+        body: {
           creative_credits: parseInt(editCreativeCredits),
           project_credits: parseInt(editProjectCredits),
-        }),
+        },
       })
       setEditOpen(false)
       setEditUserId(null)
@@ -164,10 +149,8 @@ export default function AdminUsers() {
 
   const handleToggleActive = async (userId: number) => {
     try {
-      const token = localStorage.getItem('token')
-      await fetch(`/api/admin/users/${userId}/toggle-active`, {
+      await apiFetch(`/api/admin/users/${userId}/toggle-active`, {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` },
       })
       fetchUsers()
     } catch {}
@@ -183,14 +166,9 @@ export default function AdminUsers() {
   const handleResetPassword = async () => {
     if (!passwordUserId || !newPasswordValue.trim()) return
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/admin/users/${passwordUserId}/password`, {
+      const res = await apiFetch(`/api/admin/users/${passwordUserId}/password`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ new_password: newPasswordValue }),
+        body: { new_password: newPasswordValue },
       })
       if (res.ok) {
         setPasswordOpen(false)
@@ -215,14 +193,9 @@ export default function AdminUsers() {
     const user = roleConfirmUser
     const newRole = user.role === 'admin' ? 'user' : 'admin'
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/admin/users/${user.id}/role`, {
+      const res = await apiFetch(`/api/admin/users/${user.id}/role`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ role: newRole }),
+        body: { role: newRole },
       })
       if (res.ok) {
         fetchUsers()

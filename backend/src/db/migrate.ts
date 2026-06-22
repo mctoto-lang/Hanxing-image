@@ -17,6 +17,7 @@ export function migrate() {
       priority INTEGER NOT NULL DEFAULT 0,
       allowed_models TEXT DEFAULT '[]',
       managed_models TEXT DEFAULT '[]',
+      allowed_pages TEXT DEFAULT '[]',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -65,6 +66,7 @@ export function migrate() {
       credits_charged INTEGER NOT NULL DEFAULT 0,
       credits_type TEXT NOT NULL DEFAULT 'creative',
       source TEXT NOT NULL DEFAULT 'creative',
+      task_type TEXT NOT NULL DEFAULT 'normal',
       result_images TEXT DEFAULT '[]',
       error_message TEXT,
       retry_count INTEGER NOT NULL DEFAULT 0,
@@ -81,14 +83,6 @@ export function migrate() {
       login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS gallery (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id INTEGER NOT NULL REFERENCES generation_tasks(id),
-      image_url TEXT NOT NULL,
-      is_public INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
     CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,
       value TEXT,
@@ -99,7 +93,6 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON generation_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON generation_tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_login_logs_user_id ON login_logs(user_id);
-    CREATE INDEX IF NOT EXISTS idx_gallery_is_public ON gallery(is_public);
   `);
 
   const groupCols = db.prepare("PRAGMA table_info(permission_groups)").all() as { name: string }[];
@@ -111,6 +104,10 @@ export function migrate() {
   if (!groupColNames.has('managed_models')) {
     db.exec("ALTER TABLE permission_groups ADD COLUMN managed_models TEXT DEFAULT '[]'");
     console.log('已添加 managed_models 字段到 permission_groups');
+  }
+  if (!groupColNames.has('allowed_pages')) {
+    db.exec("ALTER TABLE permission_groups ADD COLUMN allowed_pages TEXT DEFAULT '[]'");
+    console.log('已添加 allowed_pages 字段到 permission_groups');
   }
   if (!groupColNames.has('initial_creative_credits')) {
     db.exec("ALTER TABLE permission_groups ADD COLUMN initial_creative_credits INTEGER NOT NULL DEFAULT 0");
@@ -153,6 +150,11 @@ export function migrate() {
   if (!taskColNames.has('source')) {
     db.exec("ALTER TABLE generation_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'creative'");
     console.log('已添加 source 字段到 generation_tasks');
+  }
+  if (!taskColNames.has('task_type')) {
+    db.exec("ALTER TABLE generation_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'normal'");
+    db.exec("UPDATE generation_tasks SET task_type = CASE WHEN source = 'workspace' THEN 'workspace_single' ELSE 'normal' END WHERE task_type IS NULL OR task_type = 'normal'");
+    console.log('已添加 task_type 字段到 generation_tasks');
   }
   if (!taskColNames.has('task_uuid')) {
     db.exec("ALTER TABLE generation_tasks ADD COLUMN task_uuid TEXT");
@@ -310,6 +312,152 @@ export function migrate() {
     ('queue_green_threshold', '10'),
     ('queue_yellow_threshold', '15')
   `);
+
+  // ===== 批量生图工作台相关表 =====
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_api_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      model TEXT NOT NULL,
+      api_key TEXT NOT NULL,
+      format_type TEXT NOT NULL DEFAULT 'openai',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      chat_api_id INTEGER REFERENCES chat_api_configs(id),
+      fission_count INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      title TEXT NOT NULL,
+      theme_prompt TEXT NOT NULL,
+      template_id INTEGER REFERENCES prompt_templates(id),
+      status TEXT NOT NULL DEFAULT 'generating',
+      card_count INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_pinned_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      task_id INTEGER NOT NULL REFERENCES workspace_tasks(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, task_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_cards (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES workspace_tasks(id) ON DELETE CASCADE,
+      card_index INTEGER NOT NULL,
+      prompt TEXT NOT NULL,
+      selected_image_id INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS card_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id INTEGER NOT NULL REFERENCES prompt_cards(id) ON DELETE CASCADE,
+      image_api_id INTEGER REFERENCES models(id),
+      image_url TEXT NOT NULL,
+      size TEXT,
+      format TEXT DEFAULT 'png',
+      status TEXT NOT NULL DEFAULT 'generating',
+      error_message TEXT,
+      is_selected INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_api_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
+      api_type TEXT NOT NULL,
+      api_config_id INTEGER,
+      api_config_name TEXT,
+      workspace_task_id INTEGER REFERENCES workspace_tasks(id),
+      card_id INTEGER REFERENCES prompt_cards(id),
+      request_params TEXT,
+      response_status TEXT NOT NULL DEFAULT 'success',
+      response_body TEXT,
+      duration_ms INTEGER,
+      retry_count INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_tasks_user_id ON workspace_tasks(user_id);
+    CREATE INDEX IF NOT EXISTS idx_workspace_tasks_status ON workspace_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_workspace_pinned_tasks_user_id ON workspace_pinned_tasks(user_id);
+    CREATE INDEX IF NOT EXISTS idx_prompt_cards_task_id ON prompt_cards(task_id);
+    CREATE INDEX IF NOT EXISTS idx_card_images_card_id ON card_images(card_id);
+    CREATE INDEX IF NOT EXISTS idx_workspace_api_logs_user_id ON workspace_api_logs(user_id);
+  `);
+
+  console.log('批量生图工作台相关表已创建');
+
+  const cardImageCols = db.prepare("PRAGMA table_info(card_images)").all() as { name: string }[];
+  const cardImageColNames = new Set(cardImageCols.map(c => c.name));
+  if (!cardImageColNames.has('generation_task_id')) {
+    db.exec("ALTER TABLE card_images ADD COLUMN generation_task_id INTEGER REFERENCES generation_tasks(id)");
+    console.log('已添加 generation_task_id 字段到 card_images');
+  }
+
+  // ===== 对话API并发控制字段 =====
+  const chatApiCols = db.prepare("PRAGMA table_info(chat_api_configs)").all() as { name: string }[];
+  const chatApiColNames = new Set(chatApiCols.map(c => c.name));
+  if (!chatApiColNames.has('max_concurrent')) {
+    db.exec("ALTER TABLE chat_api_configs ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 5");
+    console.log('已添加 max_concurrent 字段到 chat_api_configs');
+  }
+  if (!chatApiColNames.has('max_retries')) {
+    db.exec("ALTER TABLE chat_api_configs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3");
+    console.log('已添加 max_retries 字段到 chat_api_configs');
+  }
+  if (!chatApiColNames.has('api_timeout')) {
+    db.exec("ALTER TABLE chat_api_configs ADD COLUMN api_timeout INTEGER NOT NULL DEFAULT 120");
+    console.log('已添加 api_timeout 字段到 chat_api_configs');
+  }
+
+  // ===== 对话API任务队列表 =====
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      chat_api_id INTEGER NOT NULL REFERENCES chat_api_configs(id),
+      task_type TEXT NOT NULL DEFAULT 'deepen',
+      card_id INTEGER NOT NULL REFERENCES prompt_cards(id),
+      workspace_task_id INTEGER REFERENCES workspace_tasks(id),
+      template_id INTEGER REFERENCES prompt_templates(id),
+      original_prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      result_prompt TEXT,
+      error_message TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      retry_errors TEXT DEFAULT '[]',
+      started_at TIMESTAMP,
+      completed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_tasks_user_id ON chat_tasks(user_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_tasks_status ON chat_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_chat_tasks_chat_api_id ON chat_tasks(chat_api_id);
+  `);
+  console.log('对话API任务队列表已创建');
 
   console.log('数据库迁移完成！');
 }

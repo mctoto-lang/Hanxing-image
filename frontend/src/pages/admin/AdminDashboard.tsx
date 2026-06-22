@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { apiFetch } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -180,10 +181,7 @@ export default function AdminDashboard() {
 
   const fetchDashboard = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/dashboard', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/dashboard')
       if (!res.ok) return
       const d = await res.json()
       if (d && typeof d.totalUsers === 'number') {
@@ -194,10 +192,7 @@ export default function AdminDashboard() {
 
   const fetchTrend = useCallback(async (days: number) => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/admin/dashboard/trend?days=${days}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch(`/api/admin/dashboard/trend?days=${days}`)
       if (!res.ok) return
       const d = await res.json()
       setTrendData(d)
@@ -206,10 +201,7 @@ export default function AdminDashboard() {
 
   const fetchModelsStatus = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token')
-      const res = await fetch('/api/admin/dashboard/models-status', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await apiFetch('/api/admin/dashboard/models-status')
       if (!res.ok) return
       const d = await res.json()
       setModelsData(d)

@@ -1,5 +1,5 @@
 import { useState, lazy, Suspense } from 'react'
-import { X, LayoutDashboard, Users, Shield, Cpu, Image, FileText, PanelRightClose, PanelRightOpen, Database, Settings } from 'lucide-react'
+import { LayoutDashboard, Users, Shield, Cpu, Image, FileText, PanelRightClose, PanelRightOpen, Database, Settings, BookTemplate } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import Spinner from '@/components/Spinner'
@@ -12,6 +12,7 @@ const AdminImages = lazy(() => import('@/pages/admin/AdminImages'))
 const AdminStorageSettings = lazy(() => import('@/pages/admin/AdminStorageSettings'))
 const AdminLogs = lazy(() => import('@/pages/admin/AdminLogs'))
 const AdminSettings = lazy(() => import('@/pages/admin/AdminSettings'))
+const AdminWorkspaceTemplates = lazy(() => import('@/pages/admin/AdminWorkspaceTemplates'))
 
 const PANEL_NAV_WIDTH = 200
 
@@ -23,10 +24,11 @@ const adminTabs = [
   { key: 'images', icon: Image, label: '图片管理', Component: AdminImages },
   { key: 'storage', icon: Database, label: '存储设置', Component: AdminStorageSettings },
   { key: 'settings', icon: Settings, label: '系统设置', Component: AdminSettings },
-  { key: 'logs', icon: FileText, label: '日志', Component: AdminLogs },
+  { key: 'logs', icon: FileText, label: '系统日志', Component: AdminLogs },
+  { key: 'workspace-templates', icon: BookTemplate, label: '提示词模板', Component: AdminWorkspaceTemplates },
 ]
 
-export default function AdminPanel({ onClose }: { onClose: () => void }) {
+export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [showNav, setShowNav] = useState(true)
   const ActiveComponent = adminTabs.find((t) => t.key === activeTab)?.Component || AdminDashboard
@@ -40,23 +42,14 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
         >
           <div className="flex items-center justify-between px-4 h-12 border-b border-border">
             <span className="font-semibold text-sm">管理后台</span>
-            <div className="flex items-center gap-0.5">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setShowNav(false)}
-                className="text-muted-foreground"
-              >
-                <PanelRightClose className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={onClose}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowNav(false)}
+              className="text-muted-foreground"
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </Button>
           </div>
 
           <nav className="flex flex-col gap-1 p-2 flex-1">
@@ -88,9 +81,8 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
         {!showNav && (
           <Button
             variant="outline"
-            size="sm"
             onClick={() => setShowNav(true)}
-            className="absolute left-4 top-4 gap-1.5 shadow-sm"
+            className="absolute left-4 top-4 gap-1.5 px-3 py-1.5 shadow-sm z-10"
           >
             <PanelRightOpen className="h-4 w-4" />
             <span>导航</span>
