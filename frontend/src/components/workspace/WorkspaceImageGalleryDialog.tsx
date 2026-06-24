@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn, toImageSrc } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
-import { Check, Loader2 } from 'lucide-react'
+import { Check, GripHorizontal, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import Spinner from '@/components/Spinner'
 import type { CardImage } from '@/pages/WorkspacePage'
@@ -18,6 +18,14 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, onI
   const [images, setImages] = useState<CardImage[]>([])
   const [loading, setLoading] = useState(false)
   const [selecting, setSelecting] = useState<number | null>(null)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const dragStateRef = useRef({
+    pointerId: -1,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  })
 
   const fetchImages = useCallback(async () => {
     setLoading(true)
@@ -32,6 +40,12 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, onI
   useEffect(() => {
     if (open) fetchImages()
   }, [open, fetchImages])
+
+  useEffect(() => {
+    if (open) {
+      setPosition({ x: 0, y: 0 })
+    }
+  }, [open, cardId])
 
   const handleSelect = async (image: CardImage) => {
     if (image.is_selected) return
@@ -49,13 +63,58 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, onI
     }
   }
 
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: position.x,
+      originY: position.y,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current.pointerId !== event.pointerId) return
+    const deltaX = event.clientX - dragStateRef.current.startX
+    const deltaY = event.clientY - dragStateRef.current.startY
+    setPosition({
+      x: dragStateRef.current.originX + deltaX,
+      y: dragStateRef.current.originY + deltaY,
+    })
+  }
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current.pointerId !== event.pointerId) return
+    dragStateRef.current.pointerId = -1
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
   const completedImages = images.filter(i => i.status === 'completed')
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent
+        className="max-w-2xl"
+        style={{
+          transform: `translate(calc(-50% + ${position.x}px), calc(-50% + ${position.y}px))`,
+        }}
+      >
+        <DialogHeader
+          className="cursor-move select-none pr-8"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+        >
           <DialogTitle>图片库 ({completedImages.length} 张)</DialogTitle>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <GripHorizontal className="h-3.5 w-3.5" />
+            <span>按住标题栏可移动弹框</span>
+          </div>
         </DialogHeader>
         {loading ? (
           <div className="flex items-center justify-center py-12"><Spinner /></div>

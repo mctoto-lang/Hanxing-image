@@ -272,8 +272,11 @@ export default function AdminLogs() {
   }
 
   const getSourceBadge = (task: Pick<TaskLog, 'source' | 'task_type'>) => {
-    if (task.task_type === 'workspace_batch' || task.task_type === 'workspace_single' || task.source === 'workspace') {
-      return <Badge className="bg-purple-500 hover:bg-purple-600">批量生图</Badge>
+    if (task.task_type === 'workspace_batch') {
+      return <Badge className="bg-purple-500 hover:bg-purple-600">批量多图</Badge>
+    }
+    if (task.task_type === 'workspace_single' || task.source === 'workspace') {
+      return <Badge className="bg-purple-500 hover:bg-purple-600">批量单图</Badge>
     }
     if (task.source === 'project') {
       return <Badge variant="default">工作项目</Badge>

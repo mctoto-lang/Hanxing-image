@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
-import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles } from 'lucide-react'
+import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
@@ -27,6 +28,7 @@ import WorkspaceSizeSelectDialog from '@/components/workspace/WorkspaceSizeSelec
 import WorkspaceExportDialog from '@/components/workspace/WorkspaceExportDialog'
 import WorkspaceBatchConfirmDialog from '@/components/workspace/WorkspaceBatchConfirmDialog'
 import WorkspaceGenerationConfigDialog from '@/components/workspace/WorkspaceGenerationConfigDialog'
+import { QueueStatusBadge } from '@/components/QueueStatusBadge'
 
 export interface WorkspaceTask {
   id: number
@@ -56,6 +58,9 @@ export interface PromptCard {
   sel_img_id: number | null
   sel_img_url: string | null
   sel_img_size: string | null
+  sel_img_started_at?: string | null
+  sel_img_completed_at?: string | null
+  sel_img_created_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -70,7 +75,27 @@ export interface CardImage {
   status: 'pending' | 'generating' | 'completed' | 'failed'
   error_message: string | null
   is_selected: number
+  generation_started_at?: string | null
+  generation_completed_at?: string | null
   created_at: string
+}
+
+interface TaskCardImagesPayload {
+  cards: Record<number, {
+    card_id: number
+    pending_count: number
+    completed_count: number
+    failed_count: number
+    selected_image: {
+      id: number
+      image_url: string
+      size: string | null
+      started_at: string | null
+      completed_at: string | null
+      created_at: string
+    } | null
+    images: CardImage[]
+  }>
 }
 
 export interface Template {
@@ -94,6 +119,31 @@ export interface ImageModel {
 
 const SIDEBAR_WIDTH = 280
 const GENERATION_CONFIG_STORAGE_KEY = 'workspace:generation-config'
+const WORKSPACE_CARDS_PAGE_SIZE = 500
+
+function TaskSidebarSkeleton() {
+  return (
+    <div className="flex flex-col">
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div key={index} className="px-2 py-1.5">
+          <div className="rounded-xl border border-border/60 bg-background/70 px-3 py-3">
+            <div className="flex items-start gap-3">
+              <Skeleton className="h-12 w-12 rounded-lg shrink-0" />
+              <div className="flex-1 space-y-2.5 pt-0.5">
+                <Skeleton className="h-3.5 w-4/5" />
+                <Skeleton className="h-3 w-2/3" />
+                <div className="flex items-center gap-2 pt-1">
+                  <Skeleton className="h-5 w-12 rounded-full" />
+                  <Skeleton className="h-5 w-16 rounded-full" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 interface StoredGenerationConfig {
   fissionTemplate: Template | null
@@ -118,6 +168,37 @@ function loadStoredGenerationConfig(): StoredGenerationConfig {
 function saveStoredGenerationConfig(config: StoredGenerationConfig) {
   if (typeof window === 'undefined') return
   localStorage.setItem(GENERATION_CONFIG_STORAGE_KEY, JSON.stringify(config))
+}
+
+function mergeCardsWithImageSummary(currentCards: PromptCard[], payload: TaskCardImagesPayload): PromptCard[] {
+  return currentCards.map(card => {
+    const summary = payload.cards[card.id]
+    const selected = summary?.selected_image
+    if (!selected) return card
+    return {
+      ...card,
+      selected_image_id: selected.id,
+      sel_img_id: selected.id,
+      sel_img_url: selected.image_url,
+      sel_img_size: selected.size,
+      sel_img_started_at: selected.started_at,
+      sel_img_completed_at: selected.completed_at,
+      sel_img_created_at: selected.created_at,
+    }
+  })
+}
+
+function buildCardImagesMap(payload: TaskCardImagesPayload, fallbackMap?: Map<number, CardImage[]>): Map<number, CardImage[]> {
+  const next = new Map<number, CardImage[]>()
+  Object.values(payload.cards).forEach(summary => {
+    next.set(summary.card_id, summary.images || [])
+  })
+  if (fallbackMap) {
+    for (const [cardId, images] of fallbackMap.entries()) {
+      if (!next.has(cardId)) next.set(cardId, images)
+    }
+  }
+  return next
 }
 
 const statusConfig = {
@@ -260,8 +341,8 @@ const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onP
 export default function WorkspacePage() {
 
   const [tasks, setTasks] = useState<WorkspaceTask[]>([])
-  const [tasksTotal, setTasksTotal] = useState(0)
   const [loadingTasks, setLoadingTasks] = useState(false)
+  const [queueStatus, setQueueStatus] = useState({ queued: 0, processing: 0 })
   const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set())
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -309,6 +390,25 @@ export default function WorkspacePage() {
   const taskRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [showSidebar, setShowSidebar] = useState(true)
+  const [showScrollToTop, setShowScrollToTop] = useState(false)
+  const cardScrollContainerRef = useRef<HTMLDivElement | null>(null)
+
+  const handleScrollToTop = useCallback(() => {
+    cardScrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
+  useEffect(() => {
+    const container = cardScrollContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      setShowScrollToTop(container.scrollTop > 240)
+    }
+
+    handleScroll()
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [activeTaskId, cards.length, loadingCards])
 
   const sortedTasks = useMemo(() => {
     return [...tasks].sort((a, b) => Number(pinnedIds.has(b.id)) - Number(pinnedIds.has(a.id)))
@@ -338,7 +438,6 @@ export default function WorkspacePage() {
       } else {
         setTasks(data.tasks || [])
       }
-      setTasksTotal(data.total || 0)
       setHasMoreTasks((data.tasks?.length || 0) === 20)
     } catch {
       toast.error('获取任务列表失败')
@@ -347,31 +446,38 @@ export default function WorkspacePage() {
     }
   }, [statusFilter, searchQuery])
 
+  const fetchQueueStatus = useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/tasks/queue').then(r => r.json())
+      setQueueStatus({
+        queued: Number(data.queued || 0),
+        processing: Number(data.processing || 0),
+      })
+    } catch {}
+  }, [])
+
+  const fetchTaskCardImages = useCallback(async (taskId: number) => {
+    const res = await apiFetch(`/api/workspace/tasks/${taskId}/card-images`)
+    return await res.json() as TaskCardImagesPayload
+  }, [])
+
   const fetchCards = useCallback(async (taskId: number) => {
     setLoadingCards(true)
     try {
-      const res = await apiFetch(`/api/workspace/tasks/${taskId}/cards?page_size=60`)
-      const data = await res.json()
+      const [cardsRes, imagesData] = await Promise.all([
+        apiFetch(`/api/workspace/tasks/${taskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`),
+        fetchTaskCardImages(taskId),
+      ])
+      const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      setCards(fetchedCards)
-      // 批量并行获取所有卡片的图片数据
-      const newImagesMap = new Map<number, CardImage[]>()
-      await Promise.all(fetchedCards.map(async (card) => {
-        try {
-          const imgRes = await apiFetch(`/api/workspace/cards/${card.id}/images`)
-          const imgData = await imgRes.json()
-          newImagesMap.set(card.id, imgData.images || [])
-        } catch {
-          newImagesMap.set(card.id, [])
-        }
-      }))
-      setCardImagesMap(newImagesMap)
+      setCards(mergeCardsWithImageSummary(fetchedCards, imagesData))
+      setCardImagesMap(buildCardImagesMap(imagesData, cardImagesMap))
     } catch {
       toast.error('获取卡片列表失败')
     } finally {
       setLoadingCards(false)
     }
-  }, [])
+  }, [cardImagesMap, fetchTaskCardImages])
 
   const pollTaskStatus = useCallback(async (taskId: number) => {
     try {
@@ -396,28 +502,22 @@ export default function WorkspacePage() {
   const pollCardImages = useCallback(async () => {
     if (!activeTaskId) return
     try {
-      const res = await apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=60`)
-      const data = await res.json()
+      const [cardsRes, imagesData] = await Promise.all([
+        apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`),
+        fetchTaskCardImages(activeTaskId),
+      ])
+      const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      setCards(fetchedCards)
+      const mergedCards = mergeCardsWithImageSummary(fetchedCards, imagesData)
+      const newImagesMap = buildCardImagesMap(imagesData, cardImagesMap)
 
-      // 批量并行获取所有卡片的图片数据
-      const newImagesMap = new Map<number, CardImage[]>()
-      await Promise.all(fetchedCards.map(async (card) => {
-        try {
-          const imgRes = await apiFetch(`/api/workspace/cards/${card.id}/images`)
-          const imgData = await imgRes.json()
-          newImagesMap.set(card.id, imgData.images || [])
-        } catch {
-          newImagesMap.set(card.id, [])
-        }
-      }))
+      setCards(mergedCards)
       setCardImagesMap(newImagesMap)
 
       // 检查是否还有 pending/generating 的图片，如果没有则停止轮询
       let hasAnyPending = false
-      for (const imgs of newImagesMap.values()) {
-        if (imgs.some(i => i.status === 'pending' || i.status === 'generating')) {
+      for (const summary of Object.values(imagesData.cards)) {
+        if (summary.pending_count > 0) {
           hasAnyPending = true
           break
         }
@@ -425,31 +525,18 @@ export default function WorkspacePage() {
       if (!hasAnyPending && cardImagesPollRef.current) {
         clearInterval(cardImagesPollRef.current)
         cardImagesPollRef.current = null
-      }
-
-      // 更新有 pending 图片的卡片的 sel_img_url
-      for (const card of fetchedCards) {
-        const imgs = newImagesMap.get(card.id) || []
-        const pending = imgs.filter(i => i.status === 'pending' || i.status === 'generating').length
-        if (pending === 0 && !card.sel_img_url) {
-          const selected = imgs.find(i => i.is_selected) || imgs.find(i => i.status === 'completed')
-          if (selected) {
-            setCards(prev => prev.map(c =>
-              c.id === card.id
-                ? { ...c, sel_img_url: selected.image_url, sel_img_id: selected.id, selected_image_id: selected.id }
-                : c
-            ))
-          }
-        }
+        setGeneratingImageCardIds(new Set())
+        setBatchGeneratingImageCardIds(new Set())
+        void fetchTasks(1)
+        void fetchQueueStatus()
       }
 
       // 清除已完成的单张生图状态
       setGeneratingImageCardIds(prev => {
         const next = new Set(prev)
         for (const card of fetchedCards) {
-          const imgs = newImagesMap.get(card.id) || []
-          const pending = imgs.filter(i => i.status === 'pending' || i.status === 'generating').length
-          if (pending === 0) next.delete(card.id)
+          const summary = imagesData.cards[card.id]
+          if (!summary || summary.pending_count === 0) next.delete(card.id)
         }
         if (next.size === prev.size) return prev
         return next
@@ -457,7 +544,7 @@ export default function WorkspacePage() {
     } catch {
       // 轮询失败不中断
     }
-  }, [activeTaskId])
+  }, [activeTaskId, cardImagesMap, fetchTaskCardImages])
 
   // 启动/停止卡片图片轮询
   const startCardImagesPoll = useCallback(() => {
@@ -478,7 +565,12 @@ export default function WorkspacePage() {
   useEffect(() => {
     fetchTasks(1)
     fetchPinnedIds()
-  }, [fetchTasks, fetchPinnedIds])
+    fetchQueueStatus()
+    const interval = setInterval(() => {
+      fetchQueueStatus()
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [fetchTasks, fetchPinnedIds, fetchQueueStatus])
 
   // 使用 ref 存储最新的回调，避免 useEffect 依赖导致的无限循环
   const fetchCardsRef = useRef(fetchCards)
@@ -494,6 +586,10 @@ export default function WorkspacePage() {
       if (task) setActiveTask(task)
       fetchCardsRef.current(activeTaskId)
       setSelectedCardIds(new Set())
+      setGeneratingImageCardIds(new Set())
+      setBatchDeepeningCardIds(new Set())
+      setBatchRegeneratingCardIds(new Set())
+      setBatchGeneratingImageCardIds(new Set())
 
       if (pollingRef.current) clearInterval(pollingRef.current)
       if (task?.status === 'generating') {
@@ -501,6 +597,10 @@ export default function WorkspacePage() {
       }
     } else {
       stopCardImagesPollRef.current()
+      setGeneratingImageCardIds(new Set())
+      setBatchDeepeningCardIds(new Set())
+      setBatchRegeneratingCardIds(new Set())
+      setBatchGeneratingImageCardIds(new Set())
     }
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current)
@@ -561,7 +661,13 @@ export default function WorkspacePage() {
         setActiveTaskId(null)
         setActiveTask(null)
         setCards([])
+        setCardImagesMap(new Map())
+        setGeneratingImageCardIds(new Set())
+        setBatchDeepeningCardIds(new Set())
+        setBatchRegeneratingCardIds(new Set())
+        setBatchGeneratingImageCardIds(new Set())
       }
+      void fetchQueueStatus()
     } catch {
       toast.error('删除任务失败')
     }
@@ -592,11 +698,17 @@ export default function WorkspacePage() {
 
   const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; imageModel: ImageModel | null; size: string | null }) => {
     if (config) {
-      setSelectedFissionTemplate(config.fissionTemplate)
-      setSelectedDeepenTemplate(config.refineTemplate)
-      setSelectedImageModel(config.imageModel)
-      setSelectedSize(config.size)
-      saveStoredGenerationConfig(config)
+      const nextConfig = {
+        fissionTemplate: config.fissionTemplate ?? selectedFissionTemplate,
+        refineTemplate: config.refineTemplate ?? selectedDeepenTemplate,
+        imageModel: config.imageModel ?? selectedImageModel,
+        size: config.size ?? selectedSize,
+      }
+      setSelectedFissionTemplate(nextConfig.fissionTemplate)
+      setSelectedDeepenTemplate(nextConfig.refineTemplate)
+      setSelectedImageModel(nextConfig.imageModel)
+      setSelectedSize(nextConfig.size)
+      saveStoredGenerationConfig(nextConfig)
     }
     setTasks(prev => [task, ...prev])
     setActiveTaskId(task.id)
@@ -681,28 +793,23 @@ export default function WorkspacePage() {
     }
 
     const MAX_POLL_COUNT = 100 // 最多轮询 100 次（5 分钟）
+    const remainingImageIds = new Set(cardIds)
 
     const poll = async () => {
       try {
         if (!activeTaskId) return
 
         if (type === 'image') {
-          // 并行检查所有卡片图片状态，完成的卡片立即清除加载状态
           let hasAnyPending = false
-          const results = await Promise.all(cardIds.map(async (cardId) => {
-            try {
-              const imgRes = await apiFetch(`/api/workspace/cards/${cardId}/images`)
-              if (!imgRes.ok) return { cardId, imgs: [] as CardImage[], pending: 0 }
-              const imgData = await imgRes.json()
-              const imgs: CardImage[] = imgData.images || []
-              const pending = imgs.filter(i => i.status === 'pending' || i.status === 'generating').length
-              return { cardId, imgs, pending }
-            } catch {
-              return { cardId, imgs: [] as CardImage[], pending: 0 }
-            }
-          }))
+          const activeIds = [...remainingImageIds]
+          const imagesData = await fetchTaskCardImages(activeTaskId)
 
-          for (const { cardId, imgs, pending } of results) {
+          setCardImagesMap(prev => buildCardImagesMap(imagesData, prev))
+          setCards(prev => mergeCardsWithImageSummary(prev, imagesData))
+
+          for (const cardId of activeIds) {
+            const summary = imagesData.cards[cardId]
+            const pending = summary?.pending_count ?? 1
             if (pending > 0) {
               hasAnyPending = true
             } else {
@@ -712,30 +819,21 @@ export default function WorkspacePage() {
                 next.delete(cardId)
                 return next
               })
-              // 找到最新的已完成图片作为选中图片
-              const completed = imgs.filter(i => i.status === 'completed')
-              if (completed.length > 0) {
-                const latest = completed[completed.length - 1]
-                // 只更新该卡片的状态，不影响其他卡片
-                setCards(prev => prev.map(c =>
-                  c.id === cardId
-                    ? { ...c, sel_img_url: latest.image_url, sel_img_id: latest.id, sel_img_size: latest.size, selected_image_id: latest.id }
-                    : c
-                ))
-              }
+              remainingImageIds.delete(cardId)
             }
           }
 
           // 如果所有卡片都完成，停止轮询
-          if (!hasAnyPending) {
+          if (!hasAnyPending || remainingImageIds.size === 0) {
             if (batchPollRef.current) {
               clearInterval(batchPollRef.current)
               batchPollRef.current = null
             }
+            void fetchTasks(1)
           }
         } else {
           // prompt 类型：逐卡片检查提示词是否变化，只更新参与批量操作的卡片
-          const res = await apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=60`)
+          const res = await apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`)
           const data = await res.json()
           const newCards: PromptCard[] = data.cards || []
 
@@ -790,11 +888,14 @@ export default function WorkspacePage() {
         setBatchDeepeningCardIds(new Set())
         setBatchRegeneratingCardIds(new Set())
         setBatchGeneratingImageCardIds(new Set())
+        setGeneratingImageCardIds(new Set())
+        void fetchTasks(1)
+        void fetchQueueStatus()
       } else {
         poll()
       }
     }, 3000)
-  }, [activeTaskId, cards])
+  }, [activeTaskId, cards, cardImagesMap, fetchTaskCardImages, fetchTasks])
 
   const handleBatchDelete = async () => {
     const ids = [...selectedCardIds]
@@ -807,7 +908,28 @@ export default function WorkspacePage() {
       toast.success(`已删除 ${ids.length} 张卡片`)
       setCards(prev => prev.filter(c => !ids.includes(c.id)))
       setSelectedCardIds(new Set())
+      setGeneratingImageCardIds(prev => {
+        const next = new Set(prev)
+        ids.forEach(id => next.delete(id))
+        return next
+      })
+      setBatchDeepeningCardIds(prev => {
+        const next = new Set(prev)
+        ids.forEach(id => next.delete(id))
+        return next
+      })
+      setBatchRegeneratingCardIds(prev => {
+        const next = new Set(prev)
+        ids.forEach(id => next.delete(id))
+        return next
+      })
+      setBatchGeneratingImageCardIds(prev => {
+        const next = new Set(prev)
+        ids.forEach(id => next.delete(id))
+        return next
+      })
       setTasks(prev => prev.map(t => t.id === activeTaskId ? { ...t, card_count: t.card_count - ids.length } : t))
+      void fetchQueueStatus()
     } catch {
       toast.error('批量删除失败')
     }
@@ -825,15 +947,32 @@ export default function WorkspacePage() {
         method: 'POST',
         body: { card_ids: ids, api_id: selectedImageModel.id, size: selectedSize },
       })
-      if (!res.ok) throw new Error()
-      toast.success(`已提交 ${ids.length} 张卡片的生图任务`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '批量生图提交失败')
+
+      const submittedCount = Number(data.submitted || 0)
+      const errors = Array.isArray(data.errors) ? data.errors : []
+      const successCardIds = ids.filter(id => !errors.some((item: { card_id: number }) => item.card_id === id))
+
+      if (submittedCount > 0 && errors.length > 0) {
+        toast.warning(`已提交 ${submittedCount} 张，${errors.length} 张失败`)
+      } else if (submittedCount > 0) {
+        toast.success(`已提交 ${submittedCount} 张卡片的生图任务`)
+      } else {
+        throw new Error(errors[0]?.error || '批量生图提交失败')
+      }
+
       setSelectedCardIds(new Set())
       setBatchMode(false)
-      // 启动统一轮询：批量生图后需要轮询图片状态
-      startCardImagesPoll()
-      startBatchPoll(ids, 'image')
-    } catch {
-      toast.error('批量生图提交失败')
+      void fetchQueueStatus()
+      if (successCardIds.length > 0) {
+        setBatchGeneratingImageCardIds(new Set(successCardIds))
+        startBatchPoll(successCardIds, 'image')
+      } else {
+        setBatchGeneratingImageCardIds(new Set())
+      }
+    } catch (err) {
+      toast.error((err as Error).message || '批量生图提交失败')
       setBatchGeneratingImageCardIds(new Set())
     }
   }
@@ -898,7 +1037,7 @@ export default function WorkspacePage() {
         <div className="flex items-center justify-between px-3 h-12 border-b border-border shrink-0">
           <span className="text-sm font-semibold">批量生图</span>
           <div className="flex items-center gap-1">
-            <span className="text-xs text-muted-foreground">{tasksTotal} 个任务</span>
+            <QueueStatusBadge queued={queueStatus.queued} processing={queueStatus.processing} />
             <Button
               variant="ghost"
               size="icon-sm"
@@ -938,7 +1077,7 @@ export default function WorkspacePage() {
             ))}
           </div>
 
-          <Button size="sm" className="w-full h-8 gap-1.5 text-xs" onClick={() => setShowNewTask(true)}>
+          <Button size="sm" className="w-full h-8 gap-1.5 text-xs rounded-xl" onClick={() => setShowNewTask(true)}>
             <Plus className="h-3.5 w-3.5" />
             新建任务
           </Button>
@@ -946,9 +1085,7 @@ export default function WorkspacePage() {
 
         <div className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
           {loadingTasks && tasks.length === 0 ? (
-            <div className="flex items-center justify-center py-8">
-              <Spinner />
-            </div>
+            <TaskSidebarSkeleton />
           ) : tasks.length === 0 ? (
             <div className="text-center text-muted-foreground text-xs py-8 px-4">
               暂无任务，点击「新建任务」开始
@@ -1065,9 +1202,13 @@ export default function WorkspacePage() {
                 {batchMode && selectedCardIds.size > 0 && (
                   (() => {
                     const selectedCards = cards.filter(c => selectedCardIds.has(c.id))
+                    const hasSelectedCardGeneratingImage = selectedCards.some(card => {
+                      const images = cardImagesMap.get(card.id) || []
+                      return images.some(image => image.status === 'pending' || image.status === 'generating')
+                    })
                     const hasGeneratingCard = selectedCards.some(c => {
                       return batchGeneratingImageCardIds.has(c.id) || generatingImageCardIds.has(c.id)
-                    })
+                    }) || hasSelectedCardGeneratingImage
                     if (hasGeneratingCard) {
                       return (
                         <Button
@@ -1174,7 +1315,7 @@ export default function WorkspacePage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div ref={cardScrollContainerRef} className="relative flex-1 overflow-y-auto">
               {loadingCards ? (
                 <div className="flex items-center justify-center h-full">
                   <Spinner />
@@ -1224,6 +1365,21 @@ export default function WorkspacePage() {
                   batchGeneratingImageCardIds={batchGeneratingImageCardIds}
                 />
               )}
+
+              <button
+                type="button"
+                onClick={handleScrollToTop}
+                className={cn(
+                  'sticky ml-auto mr-5 mb-5 bottom-5 flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent',
+                  showScrollToTop
+                    ? 'translate-y-0 opacity-100 pointer-events-auto'
+                    : 'translate-y-3 opacity-0 pointer-events-none'
+                )}
+                aria-label="回到顶部"
+                title="回到顶部"
+              >
+                <ArrowUp className="h-5 w-5" />
+              </button>
             </div>
           </>
         )}

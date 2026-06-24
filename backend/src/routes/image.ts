@@ -223,6 +223,7 @@ router.get('/thumb', async (req: Request, res: Response) => {
  */
 router.get('/proxy', authMiddleware, async (req: AuthRequest, res: Response) => {
   const { url } = req.query
+  const format = req.query.format === 'png' ? 'png' : req.query.format === 'jpg' || req.query.format === 'jpeg' ? 'jpg' : null
   if (!url || typeof url !== 'string') {
     res.status(400).json({ error: '缺少 url 参数' })
     return
@@ -240,6 +241,23 @@ router.get('/proxy', authMiddleware, async (req: AuthRequest, res: Response) => 
       res.status(404).json({ error: '文件不存在' })
       return
     }
+    if (format) {
+      try {
+        const sharp = (await import('sharp')).default
+        const output = format === 'png'
+          ? await sharp(filePath).png().toBuffer()
+          : await sharp(filePath).flatten({ background: '#ffffff' }).jpeg({ quality: 92 }).toBuffer()
+        res.setHeader('Content-Type', format === 'png' ? 'image/png' : 'image/jpeg')
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+        res.send(output)
+        return
+      } catch (err) {
+        console.error('[图片代理] 本地图片转码失败:', err)
+        res.status(500).json({ error: '图片转码失败' })
+        return
+      }
+    }
+
     const ext = path.extname(filePath).toLowerCase()
     const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/png'
     res.setHeader('Content-Type', contentType)
@@ -276,6 +294,22 @@ router.get('/proxy', authMiddleware, async (req: AuthRequest, res: Response) => 
       if (buffer.length > 10 * 1024 * 1024) {
         res.status(413).json({ error: '远程图片过大' })
         return
+      }
+      if (format) {
+        try {
+          const sharp = (await import('sharp')).default
+          const output = format === 'png'
+            ? await sharp(buffer).png().toBuffer()
+            : await sharp(buffer).flatten({ background: '#ffffff' }).jpeg({ quality: 92 }).toBuffer()
+          res.setHeader('Content-Type', format === 'png' ? 'image/png' : 'image/jpeg')
+          res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+          res.send(output)
+          return
+        } catch (err) {
+          console.error('[图片代理] 远程图片转码失败:', err)
+          res.status(500).json({ error: '图片转码失败' })
+          return
+        }
       }
       res.setHeader('Content-Type', contentType)
       res.setHeader('Cache-Control', 'public, max-age=604800, immutable')

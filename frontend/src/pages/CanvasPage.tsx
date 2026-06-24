@@ -557,7 +557,7 @@ export default function CanvasPage() {
             <Button
               variant="ghost"
               onClick={() => setShowHistory(false)}
-              className="gap-1.5 font-semibold hover:text-foreground"
+              className="gap-1.5 font-semibold"
             >
               <History className="h-4 w-4" />
               <span>项目创作历史</span>
@@ -566,9 +566,9 @@ export default function CanvasPage() {
               <QueueStatusBadge queued={queueStatus.queued} processing={queueStatus.processing} />
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setShowHistory(false)}
-                className="rounded text-muted-foreground"
+                className="text-muted-foreground"
               >
                 <PanelRightClose className="h-4 w-4" />
               </Button>

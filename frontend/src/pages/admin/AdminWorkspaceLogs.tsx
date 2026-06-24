@@ -73,6 +73,7 @@ export default function AdminWorkspaceLogs() {
           <SelectTrigger className="w-32 h-8 text-sm"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
+            <SelectItem value="pending">进行中</SelectItem>
             <SelectItem value="success">成功</SelectItem>
             <SelectItem value="failure">失败</SelectItem>
           </SelectContent>
@@ -108,8 +109,8 @@ export default function AdminWorkspaceLogs() {
                   <td className="px-3 py-2 text-xs max-w-[120px] truncate">{log.api_config_name || '-'}</td>
                   <td className="px-3 py-2 text-xs">{log.username || '-'}</td>
                   <td className="px-3 py-2">
-                    <Badge variant={log.response_status === 'success' ? 'default' : 'destructive'} className="text-[10px]">
-                      {log.response_status === 'success' ? '成功' : '失败'}
+                    <Badge variant={log.response_status === 'success' ? 'default' : log.response_status === 'pending' ? 'secondary' : 'destructive'} className="text-[10px]">
+                      {log.response_status === 'success' ? '成功' : log.response_status === 'pending' ? '进行中' : '失败'}
                     </Badge>
                   </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">

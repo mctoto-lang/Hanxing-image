@@ -9,8 +9,118 @@ import { taskQueue } from '../services/queue.js';
 import { chatTaskQueue } from '../services/chatQueue.js';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
+import { zipSync } from 'fflate';
 
 export const workspaceRouter = Router();
+
+const exportTickets = new Map<string, { userId: number; taskId: number; cardIds?: number[]; format: 'jpg' | 'png'; expiresAt: number }>();
+
+function sanitizeExportFilename(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function buildWorkspaceExportZip(userId: number, taskId: number, cardIds?: number[], format: 'jpg' | 'png' = 'jpg') {
+  const taskCheck = query('SELECT id, title FROM workspace_tasks WHERE id = ? AND user_id = ?', [taskId, userId]);
+  if (!taskCheck.rows[0]) {
+    return { status: 404 as const, body: { error: '任务不存在' } };
+  }
+
+  let cards;
+  if (Array.isArray(cardIds) && cardIds.length > 0) {
+    const placeholders = cardIds.map(() => '?').join(',');
+    cards = query(
+      `SELECT pc.card_index, ci.image_url, ci.size FROM prompt_cards pc
+       JOIN card_images ci ON pc.selected_image_id = ci.id
+       WHERE pc.task_id = ? AND pc.id IN (${placeholders}) AND ci.image_url != ''
+       ORDER BY pc.card_index ASC`,
+      [taskId, ...cardIds]
+    );
+  } else {
+    cards = query(
+      `SELECT pc.card_index, ci.image_url, ci.size FROM prompt_cards pc
+       JOIN card_images ci ON pc.selected_image_id = ci.id
+       WHERE pc.task_id = ? AND ci.image_url != ''
+       ORDER BY pc.card_index ASC`,
+      [taskId]
+    );
+  }
+
+  if (cards.rows.length === 0) {
+    return { status: 400 as const, body: { error: '没有可导出的图片' } };
+  }
+
+  const taskName = sanitizeExportFilename(taskCheck.rows[0].title || '批量生图') || '批量生图';
+  const zipEntries: Record<string, Uint8Array> = {};
+
+  for (const row of cards.rows as Array<{ card_index: number; image_url: string }>) {
+    const imageUrl = row.image_url;
+    let imageBuffer: Buffer;
+
+    if (imageUrl.startsWith('/uploads/')) {
+      const filePath = path.resolve(process.cwd(), imageUrl.replace(/^\//, ''));
+      if (!fs.existsSync(filePath)) {
+        continue;
+      }
+      imageBuffer = fs.readFileSync(filePath);
+    } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const imageResponse = await fetch(imageUrl, {
+        redirect: 'follow',
+        headers: { 'User-Agent': 'HanxingImageExport/1.0' },
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+      if (!imageResponse.ok) {
+        console.warn('[图片压缩包导出] 远程图片获取失败', { card_index: row.card_index, status: imageResponse.status, imageUrl });
+        continue;
+      }
+      imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    } else {
+      console.warn('[图片压缩包导出] 跳过不支持的图片地址', { card_index: row.card_index, imageUrl });
+      continue;
+    }
+
+    if (!imageBuffer.length) {
+      console.warn('[图片压缩包导出] 图片内容为空', { card_index: row.card_index, imageUrl });
+      continue;
+    }
+
+    const outputBuffer = format === 'png'
+      ? await sharp(imageBuffer).png().toBuffer()
+      : await sharp(imageBuffer)
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+
+    const filename = `${taskName}-${String(row.card_index).padStart(2, '0')}.${format}`;
+    zipEntries[filename] = new Uint8Array(outputBuffer);
+  }
+
+  if (Object.keys(zipEntries).length === 0) {
+    return { status: 400 as const, body: { error: '所有图片加载失败，无法导出压缩包' } };
+  }
+
+  const zipBuffer = Buffer.from(zipSync(zipEntries));
+  const downloadName = `${taskName}-${format.toUpperCase()}图片压缩包.zip`;
+  const asciiName = 'workspace-export.zip';
+  const encodedName = encodeURIComponent(downloadName);
+
+  return {
+    status: 200 as const,
+    body: {
+      zipBuffer,
+      fileCount: Object.keys(zipEntries).length,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+        'Content-Length': String(zipBuffer.length),
+      },
+    },
+  };
+}
 
 type SubmitSuccess = { cardImageId: number };
 type SubmitError = { status: number; error: string };
@@ -45,10 +155,12 @@ async function submitWorkspaceImageTask(
   }
 
   const totalCost = model.cost_per_image || 0;
-  if (totalCost > 0) {
+  const imageCount = Math.min(Math.max(Math.floor(Number(model.default_image_count) || 1), 1), 10);
+  const totalImageCost = totalCost * imageCount;
+  if (totalImageCost > 0) {
     const available = user.creative_credits || 0;
-    if (available < totalCost) {
-      return { status: 400, error: `创作积分不足，需要 ${totalCost} 积分，当前 ${available} 积分` };
+    if (available < totalImageCost) {
+      return { status: 400, error: `创作积分不足，需要 ${totalImageCost} 积分，当前 ${available} 积分` };
     }
   }
 
@@ -67,10 +179,10 @@ async function submitWorkspaceImageTask(
   try {
     const result = transaction(() => {
       // 在事务内扣除积分，确保原子性
-      if (totalCost > 0) {
+      if (totalImageCost > 0) {
         const updateResult = query(
           'UPDATE users SET creative_credits = creative_credits - ? WHERE id = ? AND creative_credits >= ?',
-          [totalCost, userId, totalCost]
+          [totalImageCost, userId, totalImageCost]
         );
         if (updateResult.changes === 0) {
           throw new Error('CREATIVE_CREDITS_INSUFFICIENT');
@@ -85,8 +197,8 @@ async function submitWorkspaceImageTask(
 
       const taskInsert = query(
         `INSERT INTO generation_tasks (user_id, model_id, prompt, image_size, image_count, status, priority, credits_charged, credits_type, source, task_type, task_uuid, reference_images)
-         VALUES (?, ?, ?, ?, 1, 'queued', ?, ?, 'creative', 'workspace', ?, ?, '[]')`,
-        [userId, modelId, prompt, size, user.priority || 0, totalCost, taskType, taskUuid]
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'creative', 'workspace', ?, ?, '[]')`,
+        [userId, modelId, prompt, size, imageCount, user.priority || 0, totalImageCost, taskType, taskUuid]
       );
       const newGenTaskId = taskInsert.lastInsertRowid!;
 
@@ -99,7 +211,7 @@ async function submitWorkspaceImageTask(
   } catch (err) {
     const errMsg = (err as Error).message;
     if (errMsg === 'CREATIVE_CREDITS_INSUFFICIENT') {
-      return { status: 400, error: `创作积分不足，需要 ${totalCost} 积分` };
+      return { status: 400, error: `创作积分不足，需要 ${totalImageCost} 积分` };
     }
     return { status: 500, error: '创建生图任务失败' };
   }
@@ -355,7 +467,8 @@ workspaceRouter.get('/tasks/:id/cards', authMiddleware, async (req: AuthRequest,
     if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
 
     const page = parseInt(req.query.page as string) || 1;
-    const pageSize = parseInt(req.query.page_size as string) || 60;
+    const requestedPageSize = parseInt(req.query.page_size as string) || 60;
+    const pageSize = Math.max(1, Math.min(requestedPageSize, 1000));
     const offset = (page - 1) * pageSize;
 
     const cards = query(
@@ -375,6 +488,66 @@ workspaceRouter.get('/tasks/:id/cards', authMiddleware, async (req: AuthRequest,
     });
   } catch {
     return res.status(500).json({ error: '获取卡片列表失败' });
+  }
+});
+
+workspaceRouter.get('/tasks/:id/card-images', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const taskCheck = query(
+      'SELECT id FROM workspace_tasks WHERE id = ? AND user_id = ?',
+      [req.params.id, req.userId]
+    );
+    if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
+
+    const rows = query(
+      `SELECT ci.*, gt.started_at as generation_started_at, gt.completed_at as generation_completed_at
+       FROM card_images ci
+       JOIN prompt_cards pc ON ci.card_id = pc.id
+       LEFT JOIN generation_tasks gt ON ci.generation_task_id = gt.id
+       WHERE pc.task_id = ?
+       ORDER BY pc.card_index ASC, ci.created_at ASC, ci.id ASC`,
+      [req.params.id]
+    );
+
+    const imagesByCard: Record<number, any[]> = {};
+    const cardsSummary: Record<number, any> = {};
+
+    for (const row of rows.rows as any[]) {
+      const cardId = row.card_id;
+      if (!imagesByCard[cardId]) imagesByCard[cardId] = [];
+      imagesByCard[cardId].push(row);
+    }
+
+    for (const [cardIdText, images] of Object.entries(imagesByCard)) {
+      const cardId = parseInt(cardIdText, 10);
+      const pendingCount = images.filter((img: any) => img.status === 'pending' || img.status === 'generating').length;
+      const completedCount = images.filter((img: any) => img.status === 'completed' && img.image_url).length;
+      const failedCount = images.filter((img: any) => img.status === 'failed').length;
+      const selectedImage = images.find((img: any) => img.id === img.selected_image_id && img.image_url)
+        || images.find((img: any) => img.is_selected && img.image_url)
+        || images.find((img: any) => img.status === 'completed' && img.image_url)
+        || null;
+
+      cardsSummary[cardId] = {
+        card_id: cardId,
+        pending_count: pendingCount,
+        completed_count: completedCount,
+        failed_count: failedCount,
+        selected_image: selectedImage ? {
+          id: selectedImage.id,
+          image_url: selectedImage.image_url,
+          size: selectedImage.size,
+          started_at: selectedImage.generation_started_at || null,
+          completed_at: selectedImage.generation_completed_at || null,
+          created_at: selectedImage.created_at,
+        } : null,
+        images,
+      };
+    }
+
+    return res.json({ cards: cardsSummary });
+  } catch {
+    return res.status(500).json({ error: '获取任务卡片图片状态失败' });
   }
 });
 
@@ -831,42 +1004,66 @@ workspaceRouter.get('/images/history', authMiddleware, async (req: AuthRequest, 
 
 workspaceRouter.post('/export', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { task_id, card_ids } = req.body;
+    const { task_id, card_ids, format } = req.body;
+    console.log('[图片压缩包导出] 开始导出', { task_id, card_ids_count: Array.isArray(card_ids) ? card_ids.length : 0, userId: req.userId });
     if (!task_id) return res.status(400).json({ error: '缺少 task_id' });
+    const exportFormat: 'jpg' | 'png' = format === 'png' ? 'png' : 'jpg';
 
-    const taskCheck = query('SELECT id, title FROM workspace_tasks WHERE id = ? AND user_id = ?', [task_id, req.userId]);
-    if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
-
-    let cards;
-    if (Array.isArray(card_ids) && card_ids.length > 0) {
-      const placeholders = card_ids.map(() => '?').join(',');
-      cards = query(
-        `SELECT pc.card_index, ci.image_url, ci.size FROM prompt_cards pc
-         JOIN card_images ci ON pc.selected_image_id = ci.id
-         WHERE pc.task_id = ? AND pc.id IN (${placeholders}) AND ci.image_url != ''
-         ORDER BY pc.card_index ASC`,
-        [task_id, ...card_ids]
-      );
-    } else {
-      cards = query(
-        `SELECT pc.card_index, ci.image_url, ci.size FROM prompt_cards pc
-         JOIN card_images ci ON pc.selected_image_id = ci.id
-         WHERE pc.task_id = ? AND ci.image_url != ''
-         ORDER BY pc.card_index ASC`,
-        [task_id]
-      );
+    const result = await buildWorkspaceExportZip(req.userId!, task_id, Array.isArray(card_ids) ? card_ids : undefined, exportFormat);
+    if (result.status !== 200) {
+      return res.status(result.status).json(result.body);
     }
 
-    return res.json({
-      task_title: taskCheck.rows[0].title,
-      images: cards.rows.map((r: any) => ({
-        index: r.card_index,
-        url: r.image_url,
-        size: r.size,
-        filename: `${String(r.card_index).padStart(2, '0')}.png`,
-      })),
-    });
-  } catch {
+    console.log('[图片压缩包导出] 导出完成', { fileCount: result.body.fileCount, size: result.body.zipBuffer.length });
+    Object.entries(result.body.headers).forEach(([key, value]) => res.setHeader(key, value));
+    return res.send(result.body.zipBuffer);
+  } catch (err) {
+    console.error('[图片压缩包导出] 导出失败:', err);
+    return res.status(500).json({ error: '导出失败' });
+  }
+});
+
+workspaceRouter.post('/export-ticket', authMiddleware, async (req: AuthRequest, res) => {
+  const { task_id, card_ids, format } = req.body;
+  if (!task_id) return res.status(400).json({ error: '缺少 task_id' });
+  const exportFormat: 'jpg' | 'png' = format === 'png' ? 'png' : 'jpg';
+
+  const ticket = crypto.randomUUID();
+  exportTickets.set(ticket, {
+    userId: req.userId!,
+    taskId: task_id,
+    cardIds: Array.isArray(card_ids) ? card_ids : undefined,
+    format: exportFormat,
+    expiresAt: Date.now() + 2 * 60 * 1000,
+  });
+
+  return res.json({ download_url: `/api/workspace/export-download?ticket=${encodeURIComponent(ticket)}` });
+});
+
+workspaceRouter.get('/export-download', async (req, res) => {
+  try {
+    const ticket = String(req.query.ticket || '');
+    const record = exportTickets.get(ticket);
+    if (!ticket || !record) {
+      return res.status(404).json({ error: '下载票据不存在或已失效' });
+    }
+    if (record.expiresAt < Date.now()) {
+      exportTickets.delete(ticket);
+      return res.status(410).json({ error: '下载票据已过期' });
+    }
+
+    exportTickets.delete(ticket);
+    console.log('[图片压缩包导出] 通过下载票据开始导出', { task_id: record.taskId, card_ids_count: record.cardIds?.length || 0, userId: record.userId });
+    const result = await buildWorkspaceExportZip(record.userId, record.taskId, record.cardIds, record.format);
+    if (result.status !== 200) {
+      return res.status(result.status).json(result.body);
+    }
+
+    console.log('[图片压缩包导出] 通过下载票据导出完成', { fileCount: result.body.fileCount, size: result.body.zipBuffer.length });
+    Object.entries(result.body.headers).forEach(([key, value]) => res.setHeader(key, value));
+    return res.send(result.body.zipBuffer);
+  } catch (err) {
+    console.error('[图片压缩包导出] 通过下载票据导出失败:', err);
     return res.status(500).json({ error: '导出失败' });
   }
 });

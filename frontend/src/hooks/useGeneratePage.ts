@@ -254,7 +254,6 @@ export function useGeneratePage(options: UseGeneratePageOptions) {
           prompt: text,
           model_id: parseInt(selectedModel),
           image_size: imageSize,
-          image_count: 1,
           source: taskSource,
           reference_images: referenceImages.length > 0 ? referenceImages : undefined,
         },

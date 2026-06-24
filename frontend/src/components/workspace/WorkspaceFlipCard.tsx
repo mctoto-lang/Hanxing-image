@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { Wand2, ImagePlus, RotateCcw, Loader2, Trash2, FlipHorizontal, Eye, MoreHorizontal } from 'lucide-react'
+import { Wand2, ImagePlus, RotateCcw, Loader2, Trash2, FlipHorizontal, Eye, MoreHorizontal, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -72,6 +72,17 @@ export default memo(function WorkspaceFlipCard({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cardRef = useRef(card)
   const onCardUpdatedRef = useRef(onCardUpdated)
+  const previousDisplayImageUrlRef = useRef<string | null>(null)
+
+  const completedImages = images.filter(i => i.status === 'completed')
+  const failedImages = images.filter(i => i.status === 'failed')
+  const pendingImageCount = images.filter(i => i.status === 'pending' || i.status === 'generating').length
+  const fallbackImage = images.find(i => i.id === card.selected_image_id && i.image_url) || images.find(i => i.is_selected && i.image_url) || completedImages.find(i => i.image_url)
+  const displayImageUrl = card.sel_img_url || fallbackImage?.image_url || null
+  const failedImageCount = failedImages.length
+  const failedImageTooltip = failedImageCount > 0
+    ? `${failedImageCount}张图片生成失败${failedImages[0]?.error_message ? `：${failedImages[0].error_message}` : ''}`
+    : '生图失败'
 
   useEffect(() => { cardRef.current = card }, [card])
   useEffect(() => { onCardUpdatedRef.current = onCardUpdated }, [onCardUpdated])
@@ -80,19 +91,19 @@ export default memo(function WorkspaceFlipCard({
     setPrompt(card.prompt)
   }, [card.prompt])
 
-  // 全选时，有图片的卡片翻转到图片面
   useEffect(() => {
-    if (flipAllToImage && card.sel_img_url && isFlipped) {
+    if (flipAllToImage && displayImageUrl && isFlipped) {
       setIsFlipped(false)
     }
-  }, [flipAllToImage, card.sel_img_url])
+  }, [flipAllToImage, displayImageUrl, isFlipped])
 
-  // 当图片生成完成时（sel_img_url 从 null 变为有值），自动翻转到图片面
   useEffect(() => {
-    if (card.sel_img_url && isFlipped) {
+    const previousDisplayImageUrl = previousDisplayImageUrlRef.current
+    previousDisplayImageUrlRef.current = displayImageUrl
+    if (displayImageUrl && displayImageUrl !== previousDisplayImageUrl) {
       setIsFlipped(false)
     }
-  }, [card.sel_img_url])
+  }, [displayImageUrl])
 
   useEffect(() => {
     return () => {
@@ -197,16 +208,25 @@ export default memo(function WorkspaceFlipCard({
   }
 
   const handleImageSelected = (image: CardImage) => {
-    onCardUpdated({ ...card, sel_img_url: image.image_url, sel_img_id: image.id, selected_image_id: image.id })
+    onCardUpdated({
+      ...card,
+      sel_img_url: image.image_url,
+      sel_img_id: image.id,
+      selected_image_id: image.id,
+      sel_img_size: image.size,
+      sel_img_started_at: image.generation_started_at || null,
+      sel_img_completed_at: image.generation_completed_at || null,
+      sel_img_created_at: image.created_at,
+    })
   }
 
   const openImagePreview = () => {
-    if (!card.sel_img_url) return
+    if (!displayImageUrl) return
     setPreviewOpen(true)
   }
 
   const openErrorDialog = () => {
-    if (!failedImages[0]?.error_message) return
+    if (failedImageCount === 0) return
     setErrorDialogOpen(true)
   }
 
@@ -217,10 +237,7 @@ export default memo(function WorkspaceFlipCard({
     }
   }
 
-  const hasImage = !!card.sel_img_url
-  const completedImages = images.filter(i => i.status === 'completed')
-  const failedImages = images.filter(i => i.status === 'failed')
-  const pendingImageCount = images.filter(i => i.status === 'pending' || i.status === 'generating').length
+  const hasImage = !!displayImageUrl
   const hasFailedImage = !hasImage && pendingImageCount === 0 && failedImages.length > 0
   const hasGeneratingImage = generatingImage || pendingImageCount > 0 || batchGeneratingImage
   const isLoading = deepening || regeneratingPrompt || generatingImage || pendingImageCount > 0 || batchDeepening || batchRegenerating || batchGeneratingImage
@@ -266,12 +283,13 @@ export default memo(function WorkspaceFlipCard({
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger
-                        className="flex h-16 w-16 items-center justify-center rounded-xl border border-destructive/30 bg-destructive/10 text-3xl font-semibold text-destructive shadow-sm"
+                        className="flex h-16 w-16 items-center justify-center bg-destructive/12 text-destructive shadow-sm"
+                        style={{ clipPath: 'polygon(50% 8%, 95% 92%, 5% 92%)' }}
                       >
-                        !
+                        <AlertTriangle className="h-6 w-6" />
                       </TooltipTrigger>
                       <TooltipContent side="top">
-                        {failedImages[0]?.error_message || '生图失败'}
+                        {failedImageTooltip}
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
@@ -282,10 +300,10 @@ export default memo(function WorkspaceFlipCard({
                         onClick={(e) => { e.stopPropagation(); openErrorDialog() }}
                         className="font-medium underline underline-offset-2 decoration-destructive/60 hover:text-destructive"
                       >
-                        生图失败
+                        图片生成失败
                       </button>
                     )}
-                    {batchMode && <span className="font-medium">生图失败</span>}
+                    {batchMode && <span className="font-medium">图片生成失败</span>}
                     {!batchMode && <><br />点击翻转编辑或重试</>}
                   </span>
                 </div>
@@ -295,7 +313,7 @@ export default memo(function WorkspaceFlipCard({
                   onClick={(e) => { if (!batchMode) { e.stopPropagation(); setShowGallery(true) } }}
                 >
                   <img
-                    src={toImageSrc(card.sel_img_url!, { width: 400, height: 600 })}
+                    src={toImageSrc(displayImageUrl!, { width: 400, height: 600 })}
                     alt=""
                     className="w-full h-full object-cover"
                     loading="lazy"
@@ -372,7 +390,7 @@ export default memo(function WorkspaceFlipCard({
                 {/* 生成失败：红色圆角矩形标签 */}
                 {hasFailedImage && (
                   <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-red-500 text-red-500 font-medium">
-                    生成失败
+                    图片生成失败
                   </span>
                 )}
                 {/* 已生成X张：绿色圆角矩形标签（生成中时不显示） */}
@@ -454,19 +472,21 @@ export default memo(function WorkspaceFlipCard({
       <ImagePreviewOverlay
         open={previewOpen}
         onOpenChange={setPreviewOpen}
-        imageUrl={card.sel_img_url}
+        imageUrl={displayImageUrl}
         item={{
           prompt,
           model_name: selectedImageModel?.display_name || selectedImageModel?.name,
           image_size: card.sel_img_size || selectedSize || undefined,
-          created_at: card.updated_at || card.created_at,
+          started_at: card.sel_img_started_at || null,
+          completed_at: card.sel_img_completed_at || null,
+          created_at: card.sel_img_created_at || card.updated_at || card.created_at,
         }}
       />
 
       <ApiErrorDialog
         open={errorDialogOpen}
         onOpenChange={setErrorDialogOpen}
-        errorMessage={failedImages[0]?.error_message || '生图失败'}
+        errorMessage={failedImageTooltip}
       />
     </>
   )

@@ -14,6 +14,7 @@ interface Task {
   credits_charged: number;
   credits_type: string;
   source: string;
+  task_type?: string;
   retry_count: number;
   reference_images?: string;
   started_at?: string;
@@ -29,12 +30,16 @@ interface ExtraConfig {
   image_size_grs?: string; // GRS: 1K/2K/4K
   // 云雾 MJ 格式
   bot_type?: string;       // 云雾MJ: MID_JOURNEY/NIJI_JOURNEY
+  // Jimeng 格式
+  jimeng_resolution?: string; // Jimeng: 1k/2k/4k
+  jimeng_n?: number; // Jimeng: 单次生成数量
 }
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_API_TIMEOUT_MS = 120000;
 const MJ_POLL_INTERVAL_MS = 5000;  // Midjourney 轮询间隔
 const MJ_MAX_POLL_TIME_MS = 300000; // Midjourney 最大轮询时间 5分钟
+const STALE_TASK_SCAN_INTERVAL_MS = 30000;
 
 // 尺寸转换：将 "1024x1024" 格式转换为比例格式
 function sizeToRatio(size: string): string {
@@ -47,20 +52,211 @@ function sizeToRatio(size: string): string {
   return `${w / d}:${h / d}`;
 }
 
-// 从尺寸提取宽度
-function sizeToWidth(size: string): number {
-  const match = size.match(/^(\d+)x(\d+)$/i);
-  return match ? parseInt(match[1]) : 1024;
-}
-
 class TaskQueue {
   private processing = false;
   private activeCount = 0;
   private maxGlobalConcurrent = 50; // 全局安全上限，实际由模型级 max_concurrent 控制
+  private staleTaskScanTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.startStaleTaskScanner();
+  }
 
   addTask(task: Task) {
     console.log(`[队列] 任务 #${task.id} 已加入队列 (优先级: ${task.priority}, 模型: ${task.model_id})`);
     this.processQueue();
+  }
+
+  private startStaleTaskScanner() {
+    if (this.staleTaskScanTimer) return;
+    void this.recoverStaleTasks();
+    this.staleTaskScanTimer = setInterval(() => {
+      void this.recoverStaleTasks();
+    }, STALE_TASK_SCAN_INTERVAL_MS);
+  }
+
+  private async recoverStaleTasks() {
+    try {
+      const staleTasks = query(
+        `SELECT t.*, m.task_timeout, m.api_timeout
+         FROM generation_tasks t
+         JOIN models m ON m.id = t.model_id
+         WHERE t.status IN ('queued', 'processing')
+           AND m.task_timeout > 0
+           AND t.started_at IS NOT NULL`
+      ).rows as Array<Task & { task_timeout?: number; api_timeout?: number; completed_at?: string | null }>;
+
+      for (const task of staleTasks) {
+        const taskTimeoutMs = Number(task.task_timeout || 0) * 1000;
+        if (taskTimeoutMs <= 0 || !task.started_at) continue;
+
+        const elapsedMs = this.getTaskElapsedMs(task);
+        if (elapsedMs < taskTimeoutMs) continue;
+
+        const errorMsg = `任务总超时(已等待 ${(elapsedMs / 1000).toFixed(1)}秒，限制 ${(taskTimeoutMs / 1000).toFixed(1)}秒) [兜底清理]`;
+        this.failTask(task, errorMsg, true);
+      }
+    } catch (error) {
+      console.error('[队列] 超时任务兜底清理失败:', error);
+    }
+  }
+
+  private refundTaskCredits(task: Task) {
+    if (task.credits_type === 'project') {
+      query('UPDATE users SET project_credits = project_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
+    } else {
+      query('UPDATE users SET creative_credits = creative_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
+    }
+  }
+
+  private syncWorkspaceFailure(taskId: number, errorMsg: string) {
+    const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [taskId]);
+    if (cardImageRow.rows[0]) {
+      query(
+        "UPDATE card_images SET status = 'failed', error_message = ? WHERE id = ?",
+        [errorMsg, cardImageRow.rows[0].id]
+      );
+    }
+  }
+
+  private getWorkspaceImageLogContext(taskId: number) {
+    const row = query(
+      `SELECT ci.id as card_image_id, ci.card_id, pc.task_id as workspace_task_id
+       FROM card_images ci
+       JOIN prompt_cards pc ON ci.card_id = pc.id
+       WHERE ci.generation_task_id = ?
+       LIMIT 1`,
+      [taskId]
+    ).rows[0] as { card_image_id?: number; card_id?: number; workspace_task_id?: number } | undefined
+
+    return {
+      cardImageId: row?.card_image_id || null,
+      cardId: row?.card_id || null,
+      workspaceTaskId: row?.workspace_task_id || null,
+    }
+  }
+
+  private createWorkspaceImageLog(task: Task, model: any, status: 'pending' | 'success' | 'failure', payload: {
+    requestParams?: Record<string, unknown>
+    responseBody?: string | null
+    errorMessage?: string | null
+    durationMs?: number | null
+    retryCount?: number
+  }) {
+    if (task.source !== 'workspace') return null
+
+    const context = this.getWorkspaceImageLogContext(task.id)
+    if (!context.workspaceTaskId) return null
+
+    const result = query(
+      `INSERT INTO workspace_api_logs (user_id, api_type, api_config_id, api_config_name, workspace_task_id, card_id, request_params, response_status, response_body, duration_ms, retry_count, error_message)
+       VALUES (?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        task.user_id,
+        model?.id || null,
+        model?.display_name || model?.name || null,
+        context.workspaceTaskId,
+        context.cardId,
+        payload.requestParams ? JSON.stringify(payload.requestParams) : null,
+        status,
+        payload.responseBody || null,
+        payload.durationMs ?? null,
+        payload.retryCount ?? (task.retry_count || 0),
+        payload.errorMessage || null,
+      ]
+    )
+
+    return result.lastInsertRowid
+  }
+
+  private updateWorkspaceImageLog(logId: number | null, status: 'success' | 'failure', payload: {
+    responseBody?: string | null
+    errorMessage?: string | null
+    durationMs?: number | null
+    retryCount?: number
+  }) {
+    if (!logId) return
+
+    query(
+      `UPDATE workspace_api_logs
+       SET response_status = ?, response_body = COALESCE(?, response_body), duration_ms = COALESCE(?, duration_ms), retry_count = COALESCE(?, retry_count), error_message = ?
+       WHERE id = ?`,
+      [
+        status,
+        payload.responseBody || null,
+        payload.durationMs ?? null,
+        payload.retryCount ?? null,
+        payload.errorMessage || null,
+        logId,
+      ]
+    )
+  }
+
+  private markLatestPendingCallLogFailed(taskId: number, errorMsg: string) {
+    const callLogRow = query(
+      "SELECT id FROM api_call_logs WHERE task_id = ? AND status = 'pending' ORDER BY call_index DESC, id DESC LIMIT 1",
+      [taskId]
+    );
+    if (callLogRow.rows[0]) {
+      query(
+        "UPDATE api_call_logs SET status = 'failed', error_message = COALESCE(error_message, ?), elapsed_ms = COALESCE(elapsed_ms, 0) WHERE id = ?",
+        [errorMsg, callLogRow.rows[0].id]
+      );
+    }
+  }
+
+  private markLatestPendingWorkspaceLogFailed(taskId: number, errorMsg: string) {
+    const context = this.getWorkspaceImageLogContext(taskId)
+    if (!context.workspaceTaskId) return
+
+    const logRow = query(
+      `SELECT id FROM workspace_api_logs
+       WHERE workspace_task_id = ?
+         AND card_id = ?
+         AND api_type = 'image'
+         AND response_status = 'pending'
+       ORDER BY id DESC
+       LIMIT 1`,
+      [context.workspaceTaskId, context.cardId]
+    )
+
+    if (logRow.rows[0]) {
+      query(
+        `UPDATE workspace_api_logs
+         SET response_status = 'failure', error_message = COALESCE(error_message, ?), duration_ms = COALESCE(duration_ms, 0)
+         WHERE id = ?`,
+        [errorMsg, logRow.rows[0].id]
+      )
+    }
+  }
+
+  private failTask(task: Task, errorMsg: string, refundCredits: boolean) {
+    const currentTaskRow = query(
+      'SELECT status, completed_at FROM generation_tasks WHERE id = ?',
+      [task.id]
+    );
+    const currentTask = currentTaskRow.rows[0] as { status?: string; completed_at?: string | null } | undefined;
+    if (!currentTask || currentTask.status === 'completed' || currentTask.status === 'failed') {
+      return;
+    }
+
+    query(
+      "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [errorMsg, task.id]
+    );
+
+    if (task.source === 'workspace') {
+      this.syncWorkspaceFailure(task.id, errorMsg);
+    }
+
+    this.markLatestPendingCallLogFailed(task.id, errorMsg);
+    this.markLatestPendingWorkspaceLogFailed(task.id, errorMsg);
+
+    if (refundCredits) {
+      this.refundTaskCredits(task);
+    }
+
+    console.log(`[队列] 任务 #${task.id} 已由兜底逻辑标记失败: ${errorMsg}`);
   }
 
   private async processQueue() {
@@ -131,7 +327,6 @@ class TaskQueue {
     const modelResult = query('SELECT * FROM models WHERE id = ?', [task.model_id]);
     const model = modelResult.rows[0];
     const maxRetries = model?.max_retries ?? DEFAULT_MAX_RETRIES;
-    const apiTimeoutMs = (model?.api_timeout || 120) * 1000;
     const taskTimeoutMs = (model?.task_timeout || 0) * 1000; // 0 表示不限制
 
     // 计算当前是第几次调用
@@ -143,24 +338,7 @@ class TaskQueue {
       const taskElapsed = Date.now() - new Date(task.started_at).getTime();
       if (taskElapsed >= taskTimeoutMs) {
         const errorMsg = `任务总超时(已等待 ${taskElapsed / 1000}秒，限制 ${taskTimeoutMs / 1000}秒)`;
-        query(
-          "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-          [errorMsg, task.id]
-        );
-        if (task.source === 'workspace') {
-          const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
-          if (cardImageRow.rows[0]) {
-            query(
-              "UPDATE card_images SET status = 'failed', error_message = ? WHERE id = ?",
-              [errorMsg, cardImageRow.rows[0].id]
-            );
-          }
-        }
-        if (task.credits_type === 'project') {
-          query('UPDATE users SET project_credits = project_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
-        } else {
-          query('UPDATE users SET creative_credits = creative_credits + ? WHERE id = ?', [task.credits_charged, task.user_id]);
-        }
+          this.failTask(task, errorMsg, true);
         console.log(`[队列] 任务 #${task.id} 任务总超时: ${errorMsg}`);
         return;
       }
@@ -172,6 +350,17 @@ class TaskQueue {
       [task.id, callIndex, 'pending', JSON.stringify({ model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai' })]
     );
     const callLogId = callLogResult.lastInsertRowid;
+    const workspaceLogId = this.createWorkspaceImageLog(task, model, 'pending', {
+      requestParams: {
+        generation_task_id: task.id,
+        task_type: task.task_type || null,
+        model: model?.name || null,
+        prompt: task.prompt?.slice(0, 200) || '',
+        size: task.image_size,
+        format: model?.api_format || 'openai',
+      },
+      retryCount: task.retry_count || 0,
+    })
 
     try {
       query(
@@ -190,13 +379,18 @@ class TaskQueue {
         throw new Error('模型API未配置');
       }
 
-      const imageUrls = await this.callImageAPI(model, task);
+      const imageUrls = await this.callImageAPI(model, task, taskTimeoutMs);
       const elapsed = Date.now() - startTime;
 
       query(
         "UPDATE api_call_logs SET status = 'success', response_summary = ?, elapsed_ms = ? WHERE id = ?",
         [JSON.stringify({ imageCount: imageUrls.length }), elapsed, callLogId]
       );
+      this.updateWorkspaceImageLog(workspaceLogId as number | null, 'success', {
+        responseBody: JSON.stringify({ imageCount: imageUrls.length, imageUrls: imageUrls.slice(0, 10) }),
+        durationMs: elapsed,
+        retryCount: task.retry_count || 0,
+      })
 
       query(
         "UPDATE generation_tasks SET status = 'completed', result_images = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -206,9 +400,24 @@ class TaskQueue {
       if (task.source === 'workspace') {
         const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
         if (cardImageRow.rows[0]) {
+          const primaryImageUrl = imageUrls[0] || '';
           query(
-            "UPDATE card_images SET status = 'completed', image_url = ?, error_message = NULL WHERE id = ?",
-            [imageUrls[0] || '', cardImageRow.rows[0].id]
+            'UPDATE card_images SET is_selected = 0 WHERE card_id = (SELECT card_id FROM card_images WHERE id = ?)',
+            [cardImageRow.rows[0].id]
+          );
+          query(
+            "UPDATE card_images SET status = 'completed', image_url = ?, error_message = NULL, is_selected = 1 WHERE id = ?",
+            [primaryImageUrl, cardImageRow.rows[0].id]
+          );
+          for (const imageUrl of imageUrls.slice(1)) {
+            query(
+              "INSERT INTO card_images (card_id, image_api_id, image_url, size, status, error_message, is_selected, generation_task_id) SELECT card_id, image_api_id, ?, size, 'completed', NULL, 0, generation_task_id FROM card_images WHERE id = ?",
+              [imageUrl, cardImageRow.rows[0].id]
+            );
+          }
+          query(
+            'UPDATE prompt_cards SET selected_image_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT card_id FROM card_images WHERE id = ?)',
+            [cardImageRow.rows[0].id, cardImageRow.rows[0].id]
           );
         }
       }
@@ -229,6 +438,11 @@ class TaskQueue {
         "UPDATE api_call_logs SET status = 'failed', error_message = ?, elapsed_ms = ? WHERE id = ?",
         [errorMessage, elapsed, callLogId]
       );
+      this.updateWorkspaceImageLog(workspaceLogId as number | null, 'failure', {
+        errorMessage,
+        durationMs: elapsed,
+        retryCount: currentRetry,
+      })
 
       // 追加重试错误到 retry_errors
       const existingErrors: string[] = (() => {
@@ -259,33 +473,41 @@ class TaskQueue {
       } else {
         const finalError = `${errorMessage} | 已重试${maxRetries}次均失败`;
         query(
-          "UPDATE generation_tasks SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP, retry_errors = ? WHERE id = ?",
-          [finalError, retryErrorsJson, task.id]
+          "UPDATE generation_tasks SET retry_errors = ? WHERE id = ?",
+          [retryErrorsJson, task.id]
         );
-        if (task.source === 'workspace') {
-          const cardImageRow = query('SELECT id FROM card_images WHERE generation_task_id = ?', [task.id]);
-          if (cardImageRow.rows[0]) {
-            query(
-              "UPDATE card_images SET status = 'failed', error_message = ? WHERE id = ?",
-              [finalError, cardImageRow.rows[0].id]
-            );
-          }
-        }
-        if (task.credits_type === 'project') {
-          query(
-            'UPDATE users SET project_credits = project_credits + ? WHERE id = ?',
-            [task.credits_charged, task.user_id]
-          );
-        } else {
-          query(
-            'UPDATE users SET creative_credits = creative_credits + ? WHERE id = ?',
-            [task.credits_charged, task.user_id]
-          );
-        }
+        this.failTask(task, finalError, true);
         const creditsTypeName = task.credits_type === 'project' ? '项目' : '创作';
         console.log(`[队列] 任务 #${task.id} 最终失败 (${errorType}，已重试${maxRetries}次): ${rawMessage}，耗时 ${(elapsed / 1000).toFixed(1)}秒，已退还 ${task.credits_charged} ${creditsTypeName}积分`);
       }
     }
+  }
+
+  private getTaskElapsedMs(task: Task): number {
+    if (!task.started_at) return 0;
+    return Date.now() - new Date(task.started_at).getTime();
+  }
+
+  private getRemainingTaskTimeoutMs(task: Task, taskTimeoutMs: number): number | null {
+    if (taskTimeoutMs <= 0) return null;
+    return taskTimeoutMs - this.getTaskElapsedMs(task);
+  }
+
+  private ensureTaskNotTimedOut(task: Task, taskTimeoutMs: number) {
+    const remainingMs = this.getRemainingTaskTimeoutMs(task, taskTimeoutMs);
+    if (remainingMs !== null && remainingMs <= 0) {
+      const elapsedMs = this.getTaskElapsedMs(task);
+      throw new Error(`任务总超时(已等待 ${(elapsedMs / 1000).toFixed(1)}秒，限制 ${(taskTimeoutMs / 1000).toFixed(1)}秒)`);
+    }
+  }
+
+  private getEffectiveTimeoutMs(task: Task, taskTimeoutMs: number, apiTimeoutMs: number): number {
+    const remainingMs = this.getRemainingTaskTimeoutMs(task, taskTimeoutMs);
+    if (remainingMs === null) return apiTimeoutMs;
+    if (remainingMs <= 0) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
+    }
+    return Math.max(1, Math.min(apiTimeoutMs, remainingMs ?? apiTimeoutMs));
   }
 
   private resolveEndpoint(apiEndpoint: string, hasReferenceImages: boolean): string {
@@ -315,7 +537,7 @@ class TaskQueue {
     return url
   }
 
-  private async callImageAPI(model: any, task: Task): Promise<string[]> {
+  private async callImageAPI(model: any, task: Task, taskTimeoutMs: number): Promise<string[]> {
     const apiFormat = model.api_format || 'openai';
     const extraConfig: ExtraConfig = (() => {
       try {
@@ -330,20 +552,22 @@ class TaskQueue {
 
     switch (apiFormat) {
       case 'gemini':
-        return this.callGeminiAPI(model, task, extraConfig, apiKey);
+        return this.callGeminiAPI(model, task, apiKey, taskTimeoutMs);
       case 'midjourney':
-        return this.callMidjourneyAPI(model, task, extraConfig, apiKey);
+        return this.callMidjourneyAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
       case 'grs':
-        return this.callGRSAPI(model, task, extraConfig, apiKey);
+        return this.callGRSAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
       case 'yunwu_mj':
-        return this.callYunwuMJAPI(model, task, extraConfig, apiKey);
+        return this.callYunwuMJAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
+      case 'jimeng':
+        return this.callJimengAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
       default:
-        return this.callOpenAIAPI(model, task, extraConfig, apiKey);
+        return this.callOpenAIAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
     }
   }
 
   // OpenAI GPT Image 格式
-  private async callOpenAIAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
+  private async callOpenAIAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     const hasReferenceImages = !!task.reference_images && (() => {
       try {
@@ -354,10 +578,12 @@ class TaskQueue {
     const endpoint = this.resolveEndpoint(model.api_endpoint, hasReferenceImages);
 
     for (let i = 0; i < task.image_count; i++) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       console.log(`[OpenAI] 请求 ${endpoint} | model=${model.name} | size=${task.image_size} | quality=${extraConfig.quality || 'default'} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
+      const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
       const requestBody: Record<string, unknown> = {
         model: model.name,
@@ -383,7 +609,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -395,7 +621,7 @@ class TaskQueue {
   }
 
   // Gemini Nano Banana 简化格式
-  private async callGeminiAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
+  private async callGeminiAPI(model: any, task: Task, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -411,10 +637,12 @@ class TaskQueue {
     const imageSize = sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       console.log(`[Gemini] 请求 ${endpoint} | model=${model.name} | image_size=${imageSize} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
+      const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
       const requestBody: Record<string, unknown> = {
         prompt: task.prompt,
@@ -434,7 +662,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -460,7 +688,7 @@ class TaskQueue {
   }
 
   // Midjourney 格式（异步 + 轮询）
-  private async callMidjourneyAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
+  private async callMidjourneyAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -486,10 +714,12 @@ class TaskQueue {
     const mjMode = extraConfig.mj_mode || 'fast';
 
     for (let i = 0; i < task.image_count; i++) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       console.log(`[MJ] 提交任务 ${submitEndpoint} | prompt=${mjPrompt.slice(0, 50)}... | mode=${mjMode}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
+      const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
       const requestBody: Record<string, unknown> = {
         prompt: mjPrompt,
@@ -507,7 +737,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -527,7 +757,7 @@ class TaskQueue {
       console.log(`[MJ] 任务已提交 | taskId=${taskId} | 开始轮询...`);
 
       // 轮询获取结果
-      const imageUrl = await this.pollMidjourneyResult(model.api_endpoint, apiKey, taskId, task.id, i);
+      const imageUrl = await this.pollMidjourneyResult(model.api_endpoint, apiKey, taskId, task.id, i, task, taskTimeoutMs);
       imageUrls.push(imageUrl);
     }
 
@@ -540,7 +770,9 @@ class TaskQueue {
     apiKey: string,
     taskId: string,
     taskIdNum: number,
-    imageIndex: number
+    imageIndex: number,
+    task: Task,
+    taskTimeoutMs: number
   ): Promise<string> {
     let pollEndpoint = apiEndpoint.replace(/\/+$/, '');
 
@@ -558,6 +790,7 @@ class TaskQueue {
     const startTime = Date.now();
 
     while (Date.now() - startTime < MJ_MAX_POLL_TIME_MS) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       await new Promise(resolve => setTimeout(resolve, MJ_POLL_INTERVAL_MS));
 
       console.log(`[MJ] 轮询 ${pollEndpoint} | taskId=${taskId} | 已等待 ${((Date.now() - startTime) / 1000).toFixed(0)}秒`);
@@ -604,7 +837,7 @@ class TaskQueue {
   }
 
   // GRS 中转站统一格式（nano-banana / gpt-image-2 等）
-  private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
+  private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -623,10 +856,12 @@ class TaskQueue {
     const aspectRatio = extraConfig.aspect_ratio || sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       console.log(`[GRS] 请求 ${endpoint} | model=${model.name} | aspectRatio=${aspectRatio} | replyType=${replyType} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
+      const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
       const requestBody: Record<string, unknown> = {
         model: model.name,
@@ -651,7 +886,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -673,7 +908,7 @@ class TaskQueue {
       else if (data.id && (data.status === 'running' || data.status === 'pending' || replyType === 'async')) {
         const grsTaskId = data.id;
         console.log(`[GRS] 异步任务已提交 | taskId=${grsTaskId} | 开始轮询...`);
-        const imageUrl = await this.pollGRSResult(model.api_endpoint, apiKey, grsTaskId, task.id, i);
+        const imageUrl = await this.pollGRSResult(model.api_endpoint, apiKey, grsTaskId, task.id, i, task, taskTimeoutMs);
         imageUrls.push(imageUrl);
       }
       // 其他情况：尝试通用解析
@@ -691,7 +926,9 @@ class TaskQueue {
     apiKey: string,
     taskId: string,
     taskIdNum: number,
-    imageIndex: number
+    imageIndex: number,
+    task: Task,
+    taskTimeoutMs: number
   ): Promise<string> {
     let pollEndpoint = apiEndpoint.replace(/\/+$/, '');
 
@@ -712,6 +949,7 @@ class TaskQueue {
     const startTime = Date.now();
 
     while (Date.now() - startTime < MJ_MAX_POLL_TIME_MS) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       await new Promise(resolve => setTimeout(resolve, MJ_POLL_INTERVAL_MS));
 
       console.log(`[GRS] 轮询 ${fullPollUrl} | taskId=${taskId} | 已等待 ${((Date.now() - startTime) / 1000).toFixed(0)}秒`);
@@ -764,7 +1002,7 @@ class TaskQueue {
   }
 
   // 云雾 Midjourney 格式
-  private async callYunwuMJAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string): Promise<string[]> {
+  private async callYunwuMJAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
@@ -792,10 +1030,12 @@ class TaskQueue {
     const botType = extraConfig.bot_type || 'MID_JOURNEY';
 
     for (let i = 0; i < task.image_count; i++) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       console.log(`[云雾MJ] 提交任务 ${submitEndpoint} | prompt=${mjPrompt.slice(0, 50)}... | botType=${botType}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (model.api_timeout || 120) * 1000);
+      const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
       const requestBody: Record<string, unknown> = {
         prompt: mjPrompt,
@@ -814,7 +1054,7 @@ class TaskQueue {
         } catch {}
       }
 
-      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, (model.api_timeout || 120) * 1000);
+      const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
       clearTimeout(timeoutId);
 
       const submitData = await this.parseResponse(response, submitEndpoint);
@@ -834,7 +1074,7 @@ class TaskQueue {
       console.log(`[云雾MJ] 任务已提交 | taskId=${taskId} | 开始轮询...`);
 
       // 轮询获取结果
-      const imageUrl = await this.pollYunwuMJResult(model.api_endpoint, apiKey, taskId, task.id, i);
+      const imageUrl = await this.pollYunwuMJResult(model.api_endpoint, apiKey, taskId, task.id, i, task, taskTimeoutMs);
       imageUrls.push(imageUrl);
     }
 
@@ -847,7 +1087,9 @@ class TaskQueue {
     apiKey: string,
     taskId: string,
     taskIdNum: number,
-    imageIndex: number
+    imageIndex: number,
+    task: Task,
+    taskTimeoutMs: number
   ): Promise<string> {
     let pollEndpoint = apiEndpoint.replace(/\/+$/, '');
 
@@ -870,6 +1112,7 @@ class TaskQueue {
     const startTime = Date.now();
 
     while (Date.now() - startTime < MJ_MAX_POLL_TIME_MS) {
+      this.ensureTaskNotTimedOut(task, taskTimeoutMs);
       await new Promise(resolve => setTimeout(resolve, MJ_POLL_INTERVAL_MS));
 
       console.log(`[云雾MJ] 轮询 ${pollEndpoint} | taskId=${taskId} | 已等待 ${((Date.now() - startTime) / 1000).toFixed(0)}秒`);
@@ -891,8 +1134,6 @@ class TaskQueue {
         const status = data.status;
         // 云雾MJ progress 是字符串 "100%"
         const progressStr = data.progress || '0%';
-        const progressNum = parseInt(String(progressStr).replace('%', ''), 10) || 0;
-
         console.log(`[云雾MJ] 状态: ${status} | 进度: ${progressStr}`);
 
         if (status === 'SUCCESS') {
@@ -1036,6 +1277,155 @@ class TaskQueue {
       }
       throw err;
     }
+  }
+
+  // Jimeng 即梦 AI 格式
+  private async callJimengAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
+    const imageUrls: string[] = [];
+    let endpoint = model.api_endpoint.replace(/\/+$/, '');
+
+    // 判断是否有参考图（需要使用图生图接口）
+    const hasReferenceImages = !!task.reference_images && (() => {
+      try {
+        const refs = JSON.parse(task.reference_images);
+        return Array.isArray(refs) && refs.length > 0;
+      } catch { return false; }
+    })();
+
+    // 解析 supported_sizes 获取比例
+    let ratio = '1:1';
+    try {
+      if (model.supported_sizes) {
+        const sizes = typeof model.supported_sizes === 'string' 
+          ? JSON.parse(model.supported_sizes) 
+          : model.supported_sizes;
+        if (sizes?.ratios && Array.isArray(sizes.ratios)) {
+          // 根据 image_size 匹配对应比例
+          const sizeMatch = task.image_size.match(/^(\d+)x(\d+)$/i);
+          if (sizeMatch) {
+            const w = parseInt(sizeMatch[1]);
+            const h = parseInt(sizeMatch[2]);
+            const matched = sizes.ratios.find((s: any) => s.width === w && s.height === h);
+            if (matched) {
+              ratio = matched.ratio;
+            } else {
+              // 尝试匹配比例
+              const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+              const d = gcd(w, h);
+              const taskRatio = `${w / d}:${h / d}`;
+              const found = sizes.ratios.find((s: any) => s.ratio === taskRatio);
+              ratio = found ? taskRatio : (sizes.ratios[0]?.ratio || '1:1');
+            }
+          } else {
+            ratio = sizes.ratios[0]?.ratio || '1:1';
+          }
+        }
+      }
+    } catch {}
+
+    // 获取分辨率，默认 2k
+    const resolution = extraConfig.jimeng_resolution || '2k';
+    // 获取单次生成数量，默认 1
+    const n = extraConfig.jimeng_n || 1;
+
+    // 构建端点
+    if (hasReferenceImages) {
+      // 图生图使用 /v1/images/compositions
+      if (!endpoint.includes('/images/compositions') && !endpoint.includes('/v1/chat/completions') && !endpoint.includes('/v1/responses')) {
+        if (endpoint.endsWith('/v1')) {
+          endpoint += '/images/compositions';
+        } else if (!endpoint.includes('/v1/')) {
+          endpoint += '/v1/images/compositions';
+        } else {
+          endpoint = endpoint.replace(/\/v1\/.*/, '/v1/images/compositions');
+        }
+      }
+    } else {
+      // 文生图使用 /v1/images/generations
+      if (!endpoint.includes('/images/generations') && !endpoint.includes('/v1/chat/completions') && !endpoint.includes('/v1/responses') && !endpoint.includes('/images/compositions')) {
+        if (endpoint.endsWith('/v1')) {
+          endpoint += '/images/generations';
+        } else if (!endpoint.includes('/v1/')) {
+          endpoint += '/v1/images/generations';
+        } else {
+          endpoint = endpoint.replace(/\/v1\/.*/, '/v1/images/generations');
+        }
+      }
+    }
+
+    // Jimeng 支持一次生成多张图片，使用 n 参数
+    console.log(`[Jimeng] 请求 ${endpoint} | model=${model.name} | ratio=${ratio} | resolution=${resolution} | n=${n} | hasRefImages=${hasReferenceImages} | 超时=${model.api_timeout || 120}秒`);
+
+    this.ensureTaskNotTimedOut(task, taskTimeoutMs);
+    const controller = new AbortController();
+    const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+
+    const requestBody: Record<string, unknown> = {
+      model: model.name,
+      prompt: task.prompt,
+      ratio: ratio,
+      resolution: resolution,
+      n: n,
+    };
+
+    // 添加参考图（仅图生图）
+    const referenceImages = task.reference_images;
+    if (hasReferenceImages && referenceImages) {
+      try {
+        const refImages = JSON.parse(referenceImages);
+        if (Array.isArray(refImages) && refImages.length > 0) {
+          requestBody.images = refImages;
+          console.log(`[Jimeng] 参考图: ${refImages.length} 张`);
+        }
+      } catch {}
+    }
+
+    const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
+    clearTimeout(timeoutId);
+
+    const data = await this.parseResponse(response, endpoint);
+
+    // 从响应中提取所有图片
+    let imageDataArray: any[] = [];
+    if (data.data && Array.isArray(data.data)) {
+      imageDataArray = data.data;
+    } else if (data.images && Array.isArray(data.images)) {
+      imageDataArray = data.images;
+    } else if (data.output && Array.isArray(data.output)) {
+      imageDataArray = data.output;
+    } else if (data.url) {
+      // 单个 URL 的情况
+      imageDataArray = [{ url: data.url }];
+    } else if (data.b64_json) {
+      imageDataArray = [{ b64_json: data.b64_json }];
+    }
+
+    if (imageDataArray.length === 0) {
+      throw new Error(`Jimeng API 返回数据为空`);
+    }
+
+    // 上传每张图片到 COS
+    for (let i = 0; i < imageDataArray.length; i++) {
+      const imageData = imageDataArray[i];
+      let imageUrl: string;
+
+      if (imageData.b64_json) {
+        const buffer = Buffer.from(imageData.b64_json, 'base64');
+        imageUrl = await uploadImage(buffer, generateFilename(task.id, i));
+      } else if (imageData.url) {
+        imageUrl = await this.downloadAndUpload(imageData.url, task.id, i);
+      } else if (typeof imageData === 'string') {
+        imageUrl = await this.downloadAndUpload(imageData, task.id, i);
+      } else {
+        throw new Error(`Jimeng 返回图片数据格式无法识别`);
+      }
+
+      imageUrls.push(imageUrl);
+    }
+
+    console.log(`[Jimeng] 生成完成，共 ${imageUrls.length} 张图片`);
+    return imageUrls;
   }
 
   getStatus() {

@@ -1,10 +1,9 @@
 import { useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Download, AlertTriangle, ExternalLink, FileText, Image } from 'lucide-react'
+import { Download, AlertTriangle, Image } from 'lucide-react'
 import { toast } from 'sonner'
 import Spinner from '@/components/Spinner'
-import { toImageSrc } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import type { PromptCard } from '@/pages/WorkspacePage'
 
@@ -19,10 +18,19 @@ interface Props {
 }
 
 type ExportStep = 'confirm' | 'format' | 'exporting' | 'done'
+type ExportImageFormat = 'jpg' | 'png'
+
+function sanitizeFilenamePart(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 export default function WorkspaceExportDialog({ open, onClose, taskId, taskTitle, cards, selectedCardIds, batchMode }: Props) {
   const [step, setStep] = useState<ExportStep>('confirm')
-  const [exportLinks, setExportLinks] = useState<{ index: number; url: string; filename: string }[]>([])
+  const [doneMessage, setDoneMessage] = useState('')
+  const [imageFormat, setImageFormat] = useState<ExportImageFormat>('jpg')
 
   // 根据是否有选中卡片，决定导出范围
   const targetCards = batchMode && selectedCardIds.size > 0
@@ -38,21 +46,36 @@ export default function WorkspaceExportDialog({ open, onClose, taskId, taskTitle
     setStep('format')
   }
 
-  const handleExportPng = async () => {
+  const handleExportZip = async () => {
     if (!taskId || cardsWithImages.length === 0) return
     setStep('exporting')
     try {
-      const body: { task_id: number; card_ids?: number[] } = { task_id: taskId }
+      const body: { task_id: number; card_ids?: number[]; format: ExportImageFormat } = { task_id: taskId, format: imageFormat }
       if (isPartialExport) {
         body.card_ids = cardsWithImages.map(c => c.id)
       }
-      const res = await apiFetch('/api/workspace/export', {
+      const res = await apiFetch('/api/workspace/export-ticket', {
         method: 'POST',
         body,
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || '导出失败')
-      setExportLinks(data.images || [])
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: '导出失败' }))
+        throw new Error(data.error || '导出失败')
+      }
+
+      const data = await res.json() as { download_url?: string; error?: string }
+      if (!data.download_url) {
+        throw new Error(data.error || '导出失败')
+      }
+
+      const a = document.createElement('a')
+      a.href = data.download_url
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      toast.success(`已导出图片压缩包，共 ${cardsWithImages.length} 张 ${imageFormat.toUpperCase()} 图片`)
+      setDoneMessage(`图片压缩包已开始下载，文件内为按卡片序号命名的 ${imageFormat.toUpperCase()} 图片`)
       setStep('done')
     } catch (err) {
       toast.error((err as Error).message)
@@ -60,59 +83,46 @@ export default function WorkspaceExportDialog({ open, onClose, taskId, taskTitle
     }
   }
 
-  const handleExportPdf = async () => {
-    if (!taskId || cardsWithImages.length === 0) return
+  const handleExportImages = async () => {
+    if (cardsWithImages.length === 0) return
     setStep('exporting')
     try {
-      const body: { task_id: number; card_ids?: number[] } = { task_id: taskId }
-      if (isPartialExport) {
-        body.card_ids = cardsWithImages.map(c => c.id)
+      const taskName = sanitizeFilenamePart(taskTitle || '批量生图') || '批量生图'
+      for (let index = 0; index < cardsWithImages.length; index += 1) {
+        const card = cardsWithImages[index]
+        if (!card.sel_img_url) continue
+        const proxyUrl = `/api/image/proxy?url=${encodeURIComponent(card.sel_img_url)}&format=${imageFormat}`
+        const response = await apiFetch(proxyUrl)
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({ error: '图片下载失败' }))
+          throw new Error(data.error || `第 ${card.card_index} 张图片下载失败`)
+        }
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${taskName}-${String(card.card_index).padStart(2, '0')}.${imageFormat}`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+        if (index < cardsWithImages.length - 1) {
+          await new Promise(resolve => window.setTimeout(resolve, 180))
+        }
       }
-      const res = await apiFetch('/api/workspace/export-pdf', {
-        method: 'POST',
-        body,
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: '导出失败' }))
-        throw new Error(data.error || 'PDF 导出失败')
-      }
-      // 获取 PDF 二进制数据并触发下载
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${taskTitle || '批量生图'}_导出.pdf`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      toast.success(`已导出 PDF，共 ${cardsWithImages.length} 张图片`)
+      toast.success(`已逐张导出 ${cardsWithImages.length} 张 ${imageFormat.toUpperCase()} 图片`)
+      setDoneMessage(`图片已开始逐张下载，文件名为按卡片序号命名的 ${imageFormat.toUpperCase()} 图片`)
       setStep('done')
     } catch (err) {
-      toast.error((err as Error).message || 'PDF 导出失败')
+      toast.error((err as Error).message)
       setStep('confirm')
     }
   }
 
-  const handleDownloadAll = () => {
-    exportLinks.forEach((item, i) => {
-      setTimeout(() => {
-        const a = document.createElement('a')
-        a.href = toImageSrc(item.url)
-        a.download = item.filename
-        a.target = '_blank'
-        a.rel = 'noopener noreferrer'
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-      }, i * 300)
-    })
-    toast.success(`已触发 ${exportLinks.length} 张图片下载`)
-  }
-
   const handleClose = () => {
     setStep('confirm')
-    setExportLinks([])
+    setDoneMessage('')
+    setImageFormat('jpg')
     onClose()
   }
 
@@ -170,32 +180,43 @@ export default function WorkspaceExportDialog({ open, onClose, taskId, taskTitle
                 选择导出方式
               </DialogTitle>
               <DialogDescription>
-                共 {cardsWithImages.length} 张首选图片，请选择导出格式
+                共 {cardsWithImages.length} 张首选图片，请选择导出方式
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-3">
-              <button
-                onClick={handleExportPdf}
-                className="flex items-center gap-3 w-full p-3.5 rounded-xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-colors text-left"
-              >
-                <div className="h-10 w-10 shrink-0 rounded-lg bg-red-100 dark:bg-red-950/30 flex items-center justify-center">
-                  <FileText className="h-5 w-5 text-red-600" />
+              <div className="space-y-2">
+                <div className="text-sm font-medium">图片格式</div>
+                <div className="flex gap-2">
+                  <Button variant={imageFormat === 'jpg' ? 'default' : 'outline'} size="sm" onClick={() => setImageFormat('jpg')}>
+                    JPG
+                  </Button>
+                  <Button variant={imageFormat === 'png' ? 'default' : 'outline'} size="sm" onClick={() => setImageFormat('png')}>
+                    PNG
+                  </Button>
                 </div>
-                <div>
-                  <span className="text-sm font-medium block">导出为 PDF</span>
-                  <span className="text-[10px] text-muted-foreground">一页一张图片，按图片原始尺寸</span>
-                </div>
-              </button>
+              </div>
               <button
-                onClick={handleExportPng}
+                onClick={handleExportZip}
                 className="flex items-center gap-3 w-full p-3.5 rounded-xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-colors text-left"
               >
                 <div className="h-10 w-10 shrink-0 rounded-lg bg-blue-100 dark:bg-blue-950/30 flex items-center justify-center">
                   <Image className="h-5 w-5 text-blue-600" />
                 </div>
                 <div>
-                  <span className="text-sm font-medium block">逐张下载 PNG</span>
-                  <span className="text-[10px] text-muted-foreground">逐张下载原始图片文件</span>
+                  <span className="text-sm font-medium block">导出为图片压缩包</span>
+                  <span className="text-[10px] text-muted-foreground">文件命名为 任务名称-卡片序号.{imageFormat}</span>
+                </div>
+              </button>
+              <button
+                onClick={handleExportImages}
+                className="flex items-center gap-3 w-full p-3.5 rounded-xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-colors text-left"
+              >
+                <div className="h-10 w-10 shrink-0 rounded-lg bg-emerald-100 dark:bg-emerald-950/30 flex items-center justify-center">
+                  <Image className="h-5 w-5 text-emerald-600" />
+                </div>
+                <div>
+                  <span className="text-sm font-medium block">导出为图片（逐张导出）</span>
+                  <span className="text-[10px] text-muted-foreground">逐张下载 {imageFormat.toUpperCase()} 图片，命名同样使用任务名称和卡片序号</span>
                 </div>
               </button>
             </div>
@@ -230,36 +251,9 @@ export default function WorkspaceExportDialog({ open, onClose, taskId, taskTitle
                 导出完成
               </DialogTitle>
             </DialogHeader>
-            {exportLinks.length > 0 ? (
-              <div className="space-y-2 py-2">
-                <p className="text-sm text-muted-foreground">共 {exportLinks.length} 张图片已准备好，点击下方按钮批量下载，或逐张点击链接下载。</p>
-                <div className="max-h-52 overflow-y-auto space-y-1 border rounded-lg p-2">
-                  {exportLinks.map(item => (
-                    <a
-                      key={item.index}
-                      href={toImageSrc(item.url)}
-                      download={item.filename}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs text-primary hover:underline px-1 py-0.5"
-                    >
-                      <ExternalLink className="h-3 w-3 shrink-0" />
-                      {item.filename}
-                    </a>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground text-center py-4">PDF 文件已开始下载</p>
-            )}
+            <p className="text-sm text-muted-foreground text-center py-4">{doneMessage || '文件已开始下载'}</p>
             <DialogFooter>
               <Button variant="outline" onClick={handleClose}>关闭</Button>
-              {exportLinks.length > 0 && (
-                <Button onClick={handleDownloadAll}>
-                  <Download className="h-4 w-4 mr-1.5" />
-                  批量下载全部
-                </Button>
-              )}
             </DialogFooter>
           </>
         )}

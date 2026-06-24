@@ -28,21 +28,6 @@ interface Props {
   onCreated: (task: WorkspaceTask, config: CreateConfig) => void
 }
 
-const DEFAULT_SIZES = [
-  { label: '1:1 正方形', value: '1024x1024' },
-  { label: '2:3 竖版', value: '1024x1792' },
-  { label: '3:2 横版', value: '1792x1024' },
-  { label: '9:16 手机竖屏', value: '1080x1920' },
-  { label: '16:9 横屏', value: '1920x1080' },
-]
-
-function getModelSizes(model: ImageModel | null) {
-  return model?.supported_sizes?.ratios?.map(r => ({
-    label: `${r.ratio} (${r.width}×${r.height})`,
-    value: `${r.width}x${r.height}`,
-  })) || DEFAULT_SIZES
-}
-
 export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Props) {
   const [step, setStep] = useState<CreateStep>('choose')
   const [mode, setMode] = useState<CreateMode>('smart')
@@ -51,17 +36,12 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
   const [fissionTemplateId, setFissionTemplateId] = useState('')
   const [extractTemplateId, setExtractTemplateId] = useState('')
   const [refineTemplateId, setRefineTemplateId] = useState('')
-  const [imageModelId, setImageModelId] = useState('')
-  const [size, setSize] = useState('')
   const [fissionTemplates, setFissionTemplates] = useState<Template[]>([])
   const [extractTemplates, setExtractTemplates] = useState<Template[]>([])
   const [refineTemplates, setRefineTemplates] = useState<Template[]>([])
-  const [models, setModels] = useState<ImageModel[]>([])
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
-  const selectedImageModel = useMemo(() => models.find(m => String(m.id) === imageModelId) || null, [models, imageModelId])
-  const sizes = useMemo(() => getModelSizes(selectedImageModel), [selectedImageModel])
   const fissionTemplateOptions = useMemo(() => fissionTemplates.map(t => ({
     value: String(t.id),
     label: `${t.name}${t.fission_count ? ` (${t.fission_count}条)` : ''}`,
@@ -77,41 +57,25 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
     label: t.name,
     description: t.api_name || undefined,
   })), [refineTemplates])
-  const modelOptions = useMemo(() => models.map(m => ({
-    value: String(m.id),
-    label: m.display_name || m.name,
-    description: m.name,
-  })), [models])
-  const sizeOptions = useMemo(() => sizes.map(s => ({
-    value: s.value,
-    label: s.label,
-    description: s.value,
-  })), [sizes])
 
   useEffect(() => {
     if (open) fetchOptions()
   }, [open])
 
-  useEffect(() => {
-    setSize('')
-  }, [imageModelId])
-
   const fetchOptions = async () => {
     setLoadingOptions(true)
     try {
-      const [fissionRes, extractRes, refineRes, modelsRes] = await Promise.all([
+      const [fissionRes, extractRes, refineRes] = await Promise.all([
         apiFetch('/api/admin/workspace/templates?type=fission'),
         apiFetch('/api/admin/workspace/templates?type=extract'),
         apiFetch('/api/admin/workspace/templates?type=deepen'),
-        apiFetch('/api/models?source=generate'),
       ])
-      const [fissionData, extractData, refineData, modelsData] = await Promise.all([
-        fissionRes.json(), extractRes.json(), refineRes.json(), modelsRes.json(),
+      const [fissionData, extractData, refineData] = await Promise.all([
+        fissionRes.json(), extractRes.json(), refineRes.json(),
       ])
       setFissionTemplates(fissionData.templates || [])
       setExtractTemplates(extractData.templates || [])
       setRefineTemplates(refineData.templates || [])
-      setModels(modelsData.models || [])
     } catch {
       toast.error('获取新建任务配置失败')
     } finally {
@@ -127,8 +91,6 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
     setFissionTemplateId('')
     setExtractTemplateId('')
     setRefineTemplateId('')
-    setImageModelId('')
-    setSize('')
   }
 
   const handleClose = () => {
@@ -146,9 +108,6 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
     if (!themePrompt.trim()) { toast.error(mode === 'smart' ? '请输入主题提示词' : '请输入包含多个画面描述的长提示词'); return }
     if (mode === 'smart' && !fissionTemplateId) { toast.error('请选择裂变模板'); return }
     if (mode === 'extract' && !extractTemplateId) { toast.error('请选择提取提示词模板'); return }
-    if (!refineTemplateId) { toast.error('请选择细化模板'); return }
-    if (!imageModelId) { toast.error('请选择图片模型'); return }
-    if (!size) { toast.error('请选择尺寸'); return }
 
     setSubmitting(true)
     try {
@@ -168,8 +127,8 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
       onCreated(data.task, {
         fissionTemplate: fissionTemplates.find(t => String(t.id) === fissionTemplateId) || null,
         refineTemplate: refineTemplates.find(t => String(t.id) === refineTemplateId) || null,
-        imageModel: selectedImageModel,
-        size,
+        imageModel: null,
+        size: null,
       })
       resetForm()
     } catch (err) {
@@ -264,7 +223,7 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
               )}
 
               <div className="space-y-1.5">
-                <Label>细化模板 <span className="text-destructive">*</span></Label>
+                <Label>细化模板</Label>
                 <Combobox
                   value={refineTemplateId}
                   onValueChange={setRefineTemplateId}
@@ -272,31 +231,6 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
                   placeholder="选择细化模板"
                   searchPlaceholder="搜索细化模板..."
                   emptyText="暂无细化模板"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label>图片模型 <span className="text-destructive">*</span></Label>
-                <Combobox
-                  value={imageModelId}
-                  onValueChange={setImageModelId}
-                  options={modelOptions}
-                  placeholder="选择图片模型"
-                  searchPlaceholder="搜索图片模型..."
-                  emptyText="暂无图片模型"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label>尺寸 <span className="text-destructive">*</span></Label>
-                <Combobox
-                  value={size}
-                  onValueChange={setSize}
-                  options={sizeOptions}
-                  placeholder={selectedImageModel ? '选择尺寸' : '请先选择图片模型'}
-                  searchPlaceholder="搜索尺寸..."
-                  emptyText="暂无尺寸"
-                  disabled={!selectedImageModel}
                 />
               </div>
             </div>

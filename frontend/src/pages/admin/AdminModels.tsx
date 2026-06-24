@@ -46,8 +46,39 @@ interface Model {
   supports_reference_image: boolean
   max_reference_images: number
   reference_image_field: string
-  api_format: 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj'
+  api_format: 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj' | 'jimeng'
   extra_config: string
+}
+
+type ApiFormat = Model['api_format']
+
+interface ModelForm {
+  name: string
+  display_name: string
+  api_endpoint: string
+  api_key: string
+  icon_url: string
+  supported_sizes: string
+  cost_per_image: string
+  max_concurrent: string
+  max_retries: string
+  api_timeout: string
+  task_timeout: string
+  visible_in_generate: boolean
+  visible_in_canvas: boolean
+  supports_reference_image: boolean
+  max_reference_images: string
+  reference_image_field: string
+  api_format: ApiFormat
+  quality: string
+  mj_mode: string
+  mj_version: string
+  reply_type: string
+  aspect_ratio: string
+  image_size_grs: string
+  bot_type: string
+  jimeng_resolution: string
+  jimeng_n: string
 }
 
 const DEFAULT_SIZES = JSON.stringify({
@@ -60,7 +91,7 @@ const DEFAULT_SIZES = JSON.stringify({
   ],
 }, null, 2)
 
-const emptyForm = {
+const emptyForm: ModelForm = {
   name: '',
   display_name: '',
   api_endpoint: '',
@@ -77,7 +108,7 @@ const emptyForm = {
   supports_reference_image: false,
   max_reference_images: '1',
   reference_image_field: 'image_url',
-  api_format: 'openai' as 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj',
+  api_format: 'openai',
   quality: '',
   mj_mode: 'fast',
   mj_version: '',
@@ -87,6 +118,9 @@ const emptyForm = {
   image_size_grs: '',
   // 云雾 MJ 格式
   bot_type: 'MID_JOURNEY',
+  // Jimeng 格式
+  jimeng_resolution: '2k',
+  jimeng_n: '1',
 }
 
 export default function AdminModels() {
@@ -152,6 +186,9 @@ export default function AdminModels() {
       image_size_grs: extraConfig.image_size_grs || '',
       // 云雾 MJ 格式
       bot_type: extraConfig.bot_type || 'MID_JOURNEY',
+      // Jimeng 格式
+      jimeng_resolution: extraConfig.jimeng_resolution || '2k',
+      jimeng_n: String(extraConfig.jimeng_n || 1),
     })
     setDialogOpen(true)
   }
@@ -186,7 +223,7 @@ export default function AdminModels() {
         : '/api/models'
 
       // 构建 extra_config
-      const extraConfig: Record<string, string> = {}
+      const extraConfig: Record<string, string | number> = {}
       if (form.api_format === 'openai' && form.quality) {
         extraConfig.quality = form.quality
       }
@@ -202,6 +239,10 @@ export default function AdminModels() {
       if (form.api_format === 'yunwu_mj') {
         if (form.bot_type) extraConfig.bot_type = form.bot_type
         if (form.mj_version) extraConfig.mj_version = form.mj_version
+      }
+      if (form.api_format === 'jimeng') {
+        if (form.jimeng_resolution) extraConfig.jimeng_resolution = form.jimeng_resolution
+        if (form.jimeng_n) extraConfig.jimeng_n = parseInt(form.jimeng_n)
       }
 
       const body: Record<string, unknown> = {
@@ -366,6 +407,7 @@ export default function AdminModels() {
           midjourney: 'Midjourney',
           grs: 'GRS中转站',
           yunwu_mj: '云雾MJ',
+          jimeng: '即梦AI',
         }
         const formatColors: Record<string, string> = {
           openai: 'bg-green-50 text-green-600 border-green-200',
@@ -373,6 +415,7 @@ export default function AdminModels() {
           midjourney: 'bg-purple-50 text-purple-600 border-purple-200',
           grs: 'bg-orange-50 text-orange-600 border-orange-200',
           yunwu_mj: 'bg-pink-50 text-pink-600 border-pink-200',
+          jimeng: 'bg-cyan-50 text-cyan-600 border-cyan-200',
         }
         return (
           <Badge variant="outline" className={`text-xs ${formatColors[format]}`}>
@@ -600,7 +643,7 @@ export default function AdminModels() {
               <select
                 id="api_format"
                 value={form.api_format}
-                onChange={(e) => setForm({ ...form, api_format: e.target.value as 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj' })}
+                onChange={(e) => setForm({ ...form, api_format: e.target.value as 'openai' | 'gemini' | 'midjourney' | 'grs' | 'yunwu_mj' | 'jimeng' })}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <option value="openai">OpenAI GPT Image 格式</option>
@@ -608,6 +651,7 @@ export default function AdminModels() {
                 <option value="midjourney">Midjourney 格式（标准中转站）</option>
                 <option value="grs">GRS 中转站格式</option>
                 <option value="yunwu_mj">云雾 Midjourney 格式</option>
+                <option value="jimeng">即梦 AI 格式</option>
               </select>
               <p className="text-[11px] text-muted-foreground">
                 {form.api_format === 'openai' && '标准 OpenAI 图片生成接口，支持 quality 参数'}
@@ -615,6 +659,7 @@ export default function AdminModels() {
                 {form.api_format === 'midjourney' && '标准 MJ 中转站异步接口，支持 --ar --v 参数，需要轮询获取结果'}
                 {form.api_format === 'grs' && 'GRS 中转站统一格式（nano-banana / gpt-image-2），支持同步和异步模式'}
                 {form.api_format === 'yunwu_mj' && '云雾中转站 Midjourney 接口，支持 botType 切换 MJ/Niji'}
+                {form.api_format === 'jimeng' && '即梦 AI 文生图/图生图接口，支持参考图片生成'}
               </p>
             </div>
 
@@ -744,6 +789,40 @@ export default function AdminModels() {
                   </select>
                 </div>
                 <p className="text-[11px] text-muted-foreground col-span-2">尺寸比例会自动添加到 prompt 中（--ar 参数），云雾MJ不支持mode参数</p>
+              </div>
+            )}
+
+            {/* Jimeng 即梦 AI 特定配置 */}
+            {form.api_format === 'jimeng' && (
+              <div className="grid grid-cols-[1fr_1fr] gap-4">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="jimeng_resolution">分辨率 (resolution)</Label>
+                  <select
+                    id="jimeng_resolution"
+                    value={form.jimeng_resolution}
+                    onChange={(e) => setForm({ ...form, jimeng_resolution: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="1k">1k</option>
+                    <option value="2k">2k</option>
+                    <option value="4k">4k</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="jimeng_n">单次生成数量 (n)</Label>
+                  <select
+                    id="jimeng_n"
+                    value={form.jimeng_n}
+                    onChange={(e) => setForm({ ...form, jimeng_n: e.target.value })}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="1">1 张</option>
+                    <option value="2">2 张</option>
+                    <option value="3">3 张</option>
+                    <option value="4">4 张</option>
+                  </select>
+                </div>
+                <p className="text-[11px] text-muted-foreground col-span-2">支持尺寸使用配置的比例参数，图片数量通过 n 参数一次生成多张</p>
               </div>
             )}
 

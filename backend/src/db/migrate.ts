@@ -220,6 +220,10 @@ export function migrate() {
     db.exec("ALTER TABLE models ADD COLUMN task_timeout INTEGER NOT NULL DEFAULT 0");
     console.log('已添加 task_timeout 字段到 models');
   }
+  if (!modelColNames.has('default_image_count')) {
+    db.exec("ALTER TABLE models ADD COLUMN default_image_count INTEGER NOT NULL DEFAULT 1");
+    console.log('已添加 default_image_count 字段到 models');
+  }
 
   // API 调用记录表
   db.exec(`
