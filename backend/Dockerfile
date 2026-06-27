@@ -21,7 +21,7 @@ RUN npm run build
 FROM docker.m.daocloud.io/library/node:22-alpine
 
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk add --no-cache tzdata && \
+    apk add --no-cache python3 make g++ tzdata && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     apk del tzdata
