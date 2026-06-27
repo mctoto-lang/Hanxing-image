@@ -6,17 +6,20 @@ import { Combobox } from '@/components/ui/combobox'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'sonner'
 import Spinner from '@/components/Spinner'
+import { toImageSrc } from '@/lib/utils'
 import type { Template, ImageModel } from '@/pages/WorkspacePage'
 
 interface Props {
   open: boolean
   selectedFissionTemplate: Template | null
   selectedRefineTemplate: Template | null
+  selectedRegenTemplate: Template | null
   selectedImageModel: ImageModel | null
   selectedSize: string | null
   onApply: (config: {
     fissionTemplate: Template | null
     refineTemplate: Template | null
+    regenTemplate: Template | null
     imageModel: ImageModel | null
     size: string | null
   }) => void
@@ -42,6 +45,7 @@ export default function WorkspaceGenerationConfigDialog({
   open,
   selectedFissionTemplate,
   selectedRefineTemplate,
+  selectedRegenTemplate,
   selectedImageModel,
   selectedSize,
   onApply,
@@ -49,9 +53,11 @@ export default function WorkspaceGenerationConfigDialog({
 }: Props) {
   const [fissionTemplates, setFissionTemplates] = useState<Template[]>([])
   const [refineTemplates, setRefineTemplates] = useState<Template[]>([])
+  const [regenTemplates, setRegenTemplates] = useState<Template[]>([])
   const [models, setModels] = useState<ImageModel[]>([])
   const [fissionTemplateId, setFissionTemplateId] = useState('')
   const [refineTemplateId, setRefineTemplateId] = useState('')
+  const [regenTemplateId, setRegenTemplateId] = useState('')
   const [imageModelId, setImageModelId] = useState('')
   const [size, setSize] = useState('')
   const [loading, setLoading] = useState(false)
@@ -68,10 +74,16 @@ export default function WorkspaceGenerationConfigDialog({
     label: t.name,
     description: t.api_name || undefined,
   })), [refineTemplates])
+  const regenTemplateOptions = useMemo(() => regenTemplates.map(t => ({
+    value: String(t.id),
+    label: t.name,
+    description: t.api_name || undefined,
+  })), [regenTemplates])
   const modelOptions = useMemo(() => models.map(m => ({
     value: String(m.id),
     label: m.display_name || m.name,
     description: m.name,
+    icon: m.icon_url ? toImageSrc(m.icon_url) : undefined,
   })), [models])
   const sizeOptions = useMemo(() => sizes.map(s => ({
     value: s.value,
@@ -83,6 +95,7 @@ export default function WorkspaceGenerationConfigDialog({
     if (!open) return
     setFissionTemplateId(selectedFissionTemplate ? String(selectedFissionTemplate.id) : '')
     setRefineTemplateId(selectedRefineTemplate ? String(selectedRefineTemplate.id) : '')
+    setRegenTemplateId(selectedRegenTemplate ? String(selectedRegenTemplate.id) : '')
     setImageModelId(selectedImageModel ? String(selectedImageModel.id) : '')
     setSize(selectedSize || '')
     fetchOptions()
@@ -97,14 +110,16 @@ export default function WorkspaceGenerationConfigDialog({
   const fetchOptions = async () => {
     setLoading(true)
     try {
-      const [fissionRes, refineRes, modelsRes] = await Promise.all([
+      const [fissionRes, refineRes, regenRes, modelsRes] = await Promise.all([
         apiFetch('/api/admin/workspace/templates?type=fission'),
         apiFetch('/api/admin/workspace/templates?type=deepen'),
+        apiFetch('/api/admin/workspace/templates?type=regenerate'),
         apiFetch('/api/models?source=generate'),
       ])
-      const [fissionData, refineData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), modelsRes.json()])
+      const [fissionData, refineData, regenData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), modelsRes.json()])
       setFissionTemplates(fissionData.templates || [])
       setRefineTemplates(refineData.templates || [])
+      setRegenTemplates(regenData.templates || [])
       setModels(modelsData.models || [])
     } catch {
       toast.error('获取生成配置失败')
@@ -117,6 +132,7 @@ export default function WorkspaceGenerationConfigDialog({
     onApply({
       fissionTemplate: fissionTemplates.find(t => String(t.id) === fissionTemplateId) || null,
       refineTemplate: refineTemplates.find(t => String(t.id) === refineTemplateId) || null,
+      regenTemplate: regenTemplates.find(t => String(t.id) === regenTemplateId) || null,
       imageModel: selectedModel,
       size: size || null,
     })
@@ -151,6 +167,17 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择细化模板"
                 searchPlaceholder="搜索细化模板..."
                 emptyText="暂无细化模板"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>重新生成模板</Label>
+              <Combobox
+                value={regenTemplateId}
+                onValueChange={setRegenTemplateId}
+                options={regenTemplateOptions}
+                placeholder="选择重新生成模板"
+                searchPlaceholder="搜索重新生成模板..."
+                emptyText="暂无重新生成模板"
               />
             </div>
             <div className="space-y-1.5">
