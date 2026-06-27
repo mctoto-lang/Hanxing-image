@@ -57,6 +57,7 @@ export interface PromptCard {
   selected_image_id: number | null
   sel_img_id: number | null
   sel_img_url: string | null
+  sel_img_model_name: string | null
   sel_img_size: string | null
   sel_img_started_at?: string | null
   sel_img_completed_at?: string | null
@@ -70,6 +71,7 @@ export interface CardImage {
   card_id: number
   image_api_id: number | null
   image_url: string
+  model_name?: string | null
   size: string | null
   format: string
   status: 'pending' | 'generating' | 'completed' | 'failed'
@@ -89,6 +91,7 @@ interface TaskCardImagesPayload {
     selected_image: {
       id: number
       image_url: string
+      model_name: string | null
       size: string | null
       started_at: string | null
       completed_at: string | null
@@ -148,12 +151,13 @@ function TaskSidebarSkeleton() {
 interface StoredGenerationConfig {
   fissionTemplate: Template | null
   refineTemplate: Template | null
+  regenTemplate: Template | null
   imageModel: ImageModel | null
   size: string | null
 }
 
 function loadStoredGenerationConfig(): StoredGenerationConfig {
-  const emptyConfig = { fissionTemplate: null, refineTemplate: null, imageModel: null, size: null }
+  const emptyConfig = { fissionTemplate: null, refineTemplate: null, regenTemplate: null, imageModel: null, size: null }
   if (typeof window === 'undefined') return emptyConfig
 
   try {
@@ -170,16 +174,41 @@ function saveStoredGenerationConfig(config: StoredGenerationConfig) {
   localStorage.setItem(GENERATION_CONFIG_STORAGE_KEY, JSON.stringify(config))
 }
 
-function mergeCardsWithImageSummary(currentCards: PromptCard[], payload: TaskCardImagesPayload): PromptCard[] {
-  return currentCards.map(card => {
+export function mergeCardsWithImageSummary(
+  fetchedCards: PromptCard[],
+  payload: TaskCardImagesPayload,
+  previousCards: PromptCard[] = []
+): PromptCard[] {
+  const previousCardMap = new Map(previousCards.map(card => [card.id, card]))
+
+  return fetchedCards.map(card => {
     const summary = payload.cards[card.id]
     const selected = summary?.selected_image
-    if (!selected) return card
+    const previousCard = previousCardMap.get(card.id)
+
+    if (!selected) {
+      if (!previousCard) return card
+      return {
+        ...previousCard,
+        ...card,
+        selected_image_id: card.selected_image_id ?? previousCard.selected_image_id,
+        sel_img_id: card.sel_img_id ?? previousCard.sel_img_id,
+        sel_img_url: card.sel_img_url ?? previousCard.sel_img_url,
+        sel_img_model_name: card.sel_img_model_name ?? previousCard.sel_img_model_name,
+        sel_img_size: card.sel_img_size ?? previousCard.sel_img_size,
+        sel_img_started_at: card.sel_img_started_at ?? previousCard.sel_img_started_at,
+        sel_img_completed_at: card.sel_img_completed_at ?? previousCard.sel_img_completed_at,
+        sel_img_created_at: card.sel_img_created_at ?? previousCard.sel_img_created_at,
+      }
+    }
+
     return {
+      ...previousCard,
       ...card,
       selected_image_id: selected.id,
       sel_img_id: selected.id,
       sel_img_url: selected.image_url,
+      sel_img_model_name: selected.model_name,
       sel_img_size: selected.size,
       sel_img_started_at: selected.started_at,
       sel_img_completed_at: selected.completed_at,
@@ -362,7 +391,7 @@ export default function WorkspacePage() {
 
   const [selectedFissionTemplate, setSelectedFissionTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().fissionTemplate)
   const [selectedDeepenTemplate, setSelectedDeepenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().refineTemplate)
-  const [selectedRegenTemplate, setSelectedRegenTemplate] = useState<Template | null>(null)
+  const [selectedRegenTemplate, setSelectedRegenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().regenTemplate)
   const [selectedImageModel, setSelectedImageModel] = useState<ImageModel | null>(() => loadStoredGenerationConfig().imageModel)
   const [selectedSize, setSelectedSize] = useState<string | null>(() => loadStoredGenerationConfig().size)
 
@@ -470,7 +499,7 @@ export default function WorkspacePage() {
       ])
       const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      setCards(mergeCardsWithImageSummary(fetchedCards, imagesData))
+      setCards(prev => mergeCardsWithImageSummary(fetchedCards, imagesData, prev))
       setCardImagesMap(buildCardImagesMap(imagesData, cardImagesMap))
     } catch {
       toast.error('获取卡片列表失败')
@@ -508,10 +537,9 @@ export default function WorkspacePage() {
       ])
       const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      const mergedCards = mergeCardsWithImageSummary(fetchedCards, imagesData)
       const newImagesMap = buildCardImagesMap(imagesData, cardImagesMap)
 
-      setCards(mergedCards)
+      setCards(prev => mergeCardsWithImageSummary(fetchedCards, imagesData, prev))
       setCardImagesMap(newImagesMap)
 
       // 检查是否还有 pending/generating 的图片，如果没有则停止轮询
@@ -696,16 +724,18 @@ export default function WorkspacePage() {
     }
   }
 
-  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; imageModel: ImageModel | null; size: string | null }) => {
+  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; regenTemplate: Template | null; imageModel: ImageModel | null; size: string | null }) => {
     if (config) {
       const nextConfig = {
         fissionTemplate: config.fissionTemplate ?? selectedFissionTemplate,
         refineTemplate: config.refineTemplate ?? selectedDeepenTemplate,
+        regenTemplate: config.regenTemplate ?? selectedRegenTemplate,
         imageModel: config.imageModel ?? selectedImageModel,
         size: config.size ?? selectedSize,
       }
       setSelectedFissionTemplate(nextConfig.fissionTemplate)
       setSelectedDeepenTemplate(nextConfig.refineTemplate)
+      setSelectedRegenTemplate(nextConfig.regenTemplate)
       setSelectedImageModel(nextConfig.imageModel)
       setSelectedSize(nextConfig.size)
       saveStoredGenerationConfig(nextConfig)
@@ -1346,6 +1376,7 @@ export default function WorkspacePage() {
                 </div>
               ) : (
                 <WorkspaceCardGrid
+                  taskId={activeTaskId}
                   cards={cards}
                   cardImagesMap={cardImagesMap}
                   batchMode={batchMode}
@@ -1434,11 +1465,13 @@ export default function WorkspacePage() {
         open={showGenerationConfigDialog}
         selectedFissionTemplate={selectedFissionTemplate}
         selectedRefineTemplate={selectedDeepenTemplate}
+        selectedRegenTemplate={selectedRegenTemplate}
         selectedImageModel={selectedImageModel}
         selectedSize={selectedSize}
         onApply={config => {
           setSelectedFissionTemplate(config.fissionTemplate)
           setSelectedDeepenTemplate(config.refineTemplate)
+          setSelectedRegenTemplate(config.regenTemplate)
           setSelectedImageModel(config.imageModel)
           setSelectedSize(config.size)
           saveStoredGenerationConfig(config)
