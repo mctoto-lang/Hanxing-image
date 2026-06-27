@@ -12,6 +12,7 @@ import { uploadRouter } from './routes/upload.js';
 import { workspaceRouter } from './routes/workspace.js';
 import { workspaceAdminRouter } from './routes/workspaceAdmin.js';
 import { imageRouter } from './routes/image.js';
+import productRouter from './routes/product.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { migrate } from './db/migrate.js';
 import { seed } from './db/seed.js';
@@ -63,6 +64,11 @@ app.use('/uploads', express.static('uploads', {
   },
 }));
 
+// 健康检查端点（用于Docker健康检查）
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.use('/api/auth', authRouter);
 app.use('/api/admin/users', userRouter);
 app.use('/api/models', modelRouter);
@@ -72,6 +78,7 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/admin/workspace', workspaceAdminRouter);
 app.use('/api/image', imageRouter);
+app.use('/api/product', productRouter);
 
 app.use(errorHandler);
 

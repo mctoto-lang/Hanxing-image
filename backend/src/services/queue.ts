@@ -149,14 +149,15 @@ class TaskQueue {
     if (!context.workspaceTaskId) return null
 
     const result = query(
-      `INSERT INTO workspace_api_logs (user_id, api_type, api_config_id, api_config_name, workspace_task_id, card_id, request_params, response_status, response_body, duration_ms, retry_count, error_message)
-       VALUES (?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workspace_api_logs (user_id, api_type, api_config_id, api_config_name, workspace_task_id, card_id, generation_task_id, request_params, response_status, response_body, duration_ms, retry_count, error_message)
+       VALUES (?, 'image', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         task.user_id,
         model?.id || null,
         model?.display_name || model?.name || null,
         context.workspaceTaskId,
         context.cardId,
+        task.id,
         payload.requestParams ? JSON.stringify(payload.requestParams) : null,
         status,
         payload.responseBody || null,

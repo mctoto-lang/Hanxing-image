@@ -18,6 +18,19 @@ import {
   PackageOpenIcon,
   SquareArrowUpRight02Icon,
   Target02Icon,
+  StarsIcon,
+  Layers01Icon,
+  FolderKanbanIcon,
+  GridViewIcon,
+  PictureInPictureOnIcon,
+  Shield01Icon,
+  TimeScheduleIcon,
+  CubeIcon,
+  CropIcon,
+  ImageCompositionIcon,
+  SentIcon,
+  SidebarLeftIcon,
+  SidebarRightIcon,
 } from "@hugeicons/core-free-icons"
 
 export {
@@ -39,6 +52,19 @@ export {
   PackageOpenIcon,
   SquareArrowUpRight02Icon,
   Target02Icon,
+  StarsIcon,
+  Layers01Icon,
+  FolderKanbanIcon,
+  GridViewIcon,
+  PictureInPictureOnIcon,
+  Shield01Icon,
+  TimeScheduleIcon,
+  CubeIcon,
+  CropIcon,
+  ImageCompositionIcon,
+  SentIcon,
+  SidebarLeftIcon,
+  SidebarRightIcon,
 }
 
 export type { IconSvgElement }

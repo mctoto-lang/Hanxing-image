@@ -18,6 +18,7 @@ type CreateStep = 'choose' | 'form'
 interface CreateConfig {
   fissionTemplate: Template | null
   refineTemplate: Template | null
+  regenTemplate: Template | null
   imageModel: ImageModel | null
   size: string | null
 }
@@ -127,6 +128,7 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated }: Pro
       onCreated(data.task, {
         fissionTemplate: fissionTemplates.find(t => String(t.id) === fissionTemplateId) || null,
         refineTemplate: refineTemplates.find(t => String(t.id) === refineTemplateId) || null,
+        regenTemplate: null,
         imageModel: null,
         size: null,
       })

@@ -24,6 +24,9 @@
     --input: 240 5.9% 90%;
     --ring: 240 10% 3.9%;
     --radius: 0.5rem;
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
@@ -120,6 +123,23 @@
   @keyframes shine-rotate {
     to {
       --shine-angle: 360deg;
+    }
+  }
+
+  .animate-placeholder-breathe {
+    animation: placeholder-breathe 2.6s ease-in-out infinite;
+  }
+
+  @keyframes placeholder-breathe {
+    0%,
+    100% {
+      opacity: 0.16;
+      transform: scale(0.985);
+    }
+
+    50% {
+      opacity: 0.28;
+      transform: scale(1);
     }
   }
 }

@@ -70,3 +70,19 @@ export async function apiPostJson<T = unknown>(url: string, body?: unknown, opti
   const res = await apiFetch(url, { ...options, method: 'POST', body: body as ApiFetchOptions['body'] })
   return res.json() as Promise<T>
 }
+
+/**
+ * 安全地解析 Response 的 JSON 内容。
+ * 当响应体为空或不是合法 JSON 时（例如 404 空响应），返回 {} 而不是抛出
+ * "Failed to execute 'json' on 'Response': Unexpected end of JSON input"。
+ */
+export async function safeResponseJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text()
+  if (!text.trim()) return {}
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}

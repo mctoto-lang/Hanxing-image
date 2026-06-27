@@ -33,16 +33,19 @@ const upload = multer({
 modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const source = req.query.source as string;
+    const page = req.query.page as string;
     let whereClause = 'WHERE is_active = true';
 
-    if (source === 'generate') {
+    if (source === 'generate' || page === 'generate') {
       whereClause += ' AND visible_in_generate = 1';
-    } else if (source === 'canvas') {
+    } else if (source === 'canvas' || page === 'canvas') {
       whereClause += ' AND visible_in_canvas = 1';
+    } else if (page === 'product') {
+      whereClause += ' AND visible_in_product = 1';
     }
 
     const result = query(
-      `SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, api_format, extra_config FROM models ${whereClause} ORDER BY id`
+      `SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, is_active, visible_in_generate, visible_in_canvas, visible_in_product, supports_reference_image, max_reference_images, api_format, extra_config FROM models ${whereClause} ORDER BY id`
     );
 
     // 根据用户权限组过滤模型
@@ -60,6 +63,11 @@ modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
+    // 对于 product 页面，直接返回数组而不是对象
+    if (page === 'product') {
+      return res.json(models);
+    }
+    
     return res.json({ models });
   } catch {
     return res.status(500).json({ error: '获取模型列表失败' });
@@ -69,7 +77,7 @@ modelRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
 modelRouter.get('/all', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query(
-      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, is_active, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models ORDER BY id'
+      'SELECT id, name, display_name, api_endpoint, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, is_active, visible_in_generate, visible_in_canvas, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models ORDER BY id'
     );
     return res.json({ models: result.rows });
   } catch {
@@ -79,13 +87,13 @@ modelRouter.get('/all', authMiddleware, adminMiddlewareRealtime, async (_req: Au
 
 modelRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
-    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count } = req.body;
+    const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count } = req.body;
     const insertResult = query(
-      'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, display_name, api_endpoint, api_key ? encrypt(api_key) : null, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}', default_image_count || 1]
+      'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, display_name, api_endpoint, api_key ? encrypt(api_key) : null, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, visible_in_product ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}', default_image_count || 1]
     );
     const result = query(
-      'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, visible_in_generate, visible_in_canvas, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
+      'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, visible_in_generate, visible_in_canvas, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
       [insertResult.lastInsertRowid]
     );
     return res.status(201).json({ model: result.rows[0] });

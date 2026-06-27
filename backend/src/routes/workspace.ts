@@ -22,6 +22,26 @@ function sanitizeExportFilename(value: string) {
     .trim();
 }
 
+function summarizeWorkspaceCardImages(images: any[]) {
+  const pendingCount = images.filter((img: any) => img.status === 'pending' || img.status === 'generating').length;
+  const completedImages = images.filter((img: any) => img.status === 'completed' && img.image_url);
+  const historyFailedCount = images.filter((img: any) => img.status === 'failed').length;
+  const selectedImage = images.find((img: any) => img.id === img.selected_image_id && img.image_url)
+    || images.find((img: any) => img.is_selected && img.image_url)
+    || completedImages[0]
+    || null;
+  const hasFailed = pendingCount === 0 && !selectedImage && completedImages.length === 0 && historyFailedCount > 0;
+
+  return {
+    pendingCount,
+    completedCount: completedImages.length,
+    failedCount: hasFailed ? historyFailedCount : 0,
+    hasGenerating: pendingCount > 0,
+    hasFailed,
+    selectedImage,
+  };
+}
+
 async function buildWorkspaceExportZip(userId: number, taskId: number, cardIds?: number[], format: 'jpg' | 'png' = 'jpg') {
   const taskCheck = query('SELECT id, title FROM workspace_tasks WHERE id = ? AND user_id = ?', [taskId, userId]);
   if (!taskCheck.rows[0]) {
@@ -257,19 +277,7 @@ workspaceRouter.get('/tasks', authMiddleware, async (req: AuthRequest, res) => {
           FROM prompt_cards pc
           JOIN card_images ci ON ci.card_id = pc.id
           WHERE pc.task_id = t.id AND ci.status = 'completed' AND ci.image_url != ''
-        ) as completed_image_count,
-        (
-          SELECT COUNT(*)
-          FROM prompt_cards pc
-          JOIN card_images ci ON ci.card_id = pc.id
-          WHERE pc.task_id = t.id AND (ci.status = 'pending' OR ci.status = 'generating')
-        ) as generating_image_count,
-        (
-          SELECT COUNT(*)
-          FROM prompt_cards pc
-          JOIN card_images ci ON ci.card_id = pc.id
-          WHERE pc.task_id = t.id AND ci.status = 'failed'
-        ) as failed_image_count
+        ) as completed_image_count
        FROM workspace_tasks t
        LEFT JOIN prompt_templates pt ON t.template_id = pt.id
        LEFT JOIN workspace_pinned_tasks wpt ON wpt.task_id = t.id AND wpt.user_id = ?
@@ -281,6 +289,7 @@ workspaceRouter.get('/tasks', authMiddleware, async (req: AuthRequest, res) => {
     // 获取每个任务的缩略图列表（最多3张）
     const taskIds = tasks.rows.map((t: any) => t.id);
     const thumbnailMap: Record<number, string[]> = {};
+    const taskBadgeStats = new Map<number, { generating_image_count: number; failed_image_count: number; completed_image_count: number }>();
     for (const taskId of taskIds) {
       const thumbResult = query(
         `SELECT ci.image_url
@@ -292,10 +301,49 @@ workspaceRouter.get('/tasks', authMiddleware, async (req: AuthRequest, res) => {
         [taskId]
       );
       thumbnailMap[taskId] = thumbResult.rows.map((r: any) => r.image_url);
+
+      const taskImageRows = query(
+        `SELECT ci.*, pc.selected_image_id
+         FROM prompt_cards pc
+         LEFT JOIN card_images ci ON ci.card_id = pc.id
+         WHERE pc.task_id = ?
+         ORDER BY pc.card_index ASC, ci.created_at ASC, ci.id ASC`,
+        [taskId]
+      );
+
+      const imagesByCard = new Map<number, any[]>();
+      for (const row of taskImageRows.rows as any[]) {
+        const cardId = row.card_id || row.id;
+        if (!imagesByCard.has(cardId)) imagesByCard.set(cardId, []);
+        if (row.id !== null) {
+          imagesByCard.get(cardId)!.push(row);
+        }
+      }
+
+      let generatingImageCount = 0;
+      let failedImageCount = 0;
+      let completedImageCount = 0;
+      for (const images of imagesByCard.values()) {
+        const summary = summarizeWorkspaceCardImages(images);
+        completedImageCount += summary.completedCount;
+        if (summary.hasGenerating) generatingImageCount += 1;
+        if (summary.hasFailed) failedImageCount += 1;
+      }
+
+      taskBadgeStats.set(taskId, {
+        generating_image_count: generatingImageCount,
+        failed_image_count: failedImageCount,
+        completed_image_count: completedImageCount,
+      });
     }
 
     const tasksWithThumbnails = tasks.rows.map((task: any) => ({
       ...task,
+      ...(taskBadgeStats.get(task.id) || {
+        generating_image_count: 0,
+        failed_image_count: 0,
+        completed_image_count: Number(task.completed_image_count || 0),
+      }),
       thumbnail_urls: thumbnailMap[task.id] || [],
     }));
 
@@ -433,12 +481,32 @@ workspaceRouter.delete('/tasks/:id', authMiddleware, async (req: AuthRequest, re
     transaction(() => {
       // 先删除 workspace_api_logs（没有 ON DELETE CASCADE，需手动清理）
       query('DELETE FROM workspace_api_logs WHERE workspace_task_id = ?', [taskId]);
+      query('DELETE FROM chat_tasks WHERE workspace_task_id = ?', [taskId]);
+
+      // 清空卡片对已选图片的引用，避免删除 card_images 时触发外键约束
+      query(
+        `UPDATE prompt_cards
+         SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE task_id = ? AND selected_image_id IS NOT NULL`,
+        [taskId]
+      );
 
       // 查询关联的 generation_tasks ID（用于后续清理）
       const genTaskIds = query(
         `SELECT generation_task_id FROM card_images WHERE card_id IN (SELECT id FROM prompt_cards WHERE task_id = ?) AND generation_task_id IS NOT NULL`,
         [taskId]
       ).rows.map((r: any) => r.generation_task_id);
+
+      const cardIds = query(
+        'SELECT id FROM prompt_cards WHERE task_id = ?',
+        [taskId]
+      ).rows.map((r: any) => r.id);
+
+      if (cardIds.length > 0) {
+        const placeholders = cardIds.map(() => '?').join(',');
+        query(`DELETE FROM workspace_api_logs WHERE card_id IN (${placeholders})`, cardIds);
+        query(`DELETE FROM chat_tasks WHERE card_id IN (${placeholders})`, cardIds);
+      }
 
       // 清理其他关联数据
       query('DELETE FROM workspace_pinned_tasks WHERE task_id = ?', [taskId]);
@@ -472,9 +540,10 @@ workspaceRouter.get('/tasks/:id/cards', authMiddleware, async (req: AuthRequest,
     const offset = (page - 1) * pageSize;
 
     const cards = query(
-      `SELECT c.*, ci.id as sel_img_id, ci.image_url as sel_img_url, ci.size as sel_img_size
+      `SELECT c.*, ci.id as sel_img_id, ci.image_url as sel_img_url, ci.size as sel_img_size, wl.api_config_name as sel_img_model_name
        FROM prompt_cards c
        LEFT JOIN card_images ci ON c.selected_image_id = ci.id
+       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
        WHERE c.task_id = ? ORDER BY c.card_index ASC LIMIT ? OFFSET ?`,
       [req.params.id, pageSize, offset]
     );
@@ -500,10 +569,11 @@ workspaceRouter.get('/tasks/:id/card-images', authMiddleware, async (req: AuthRe
     if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
 
     const rows = query(
-      `SELECT ci.*, gt.started_at as generation_started_at, gt.completed_at as generation_completed_at
+      `SELECT ci.*, gt.started_at as generation_started_at, gt.completed_at as generation_completed_at, wl.api_config_name as model_name_from_log
        FROM card_images ci
        JOIN prompt_cards pc ON ci.card_id = pc.id
        LEFT JOIN generation_tasks gt ON ci.generation_task_id = gt.id
+       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
        WHERE pc.task_id = ?
        ORDER BY pc.card_index ASC, ci.created_at ASC, ci.id ASC`,
       [req.params.id]
@@ -520,26 +590,21 @@ workspaceRouter.get('/tasks/:id/card-images', authMiddleware, async (req: AuthRe
 
     for (const [cardIdText, images] of Object.entries(imagesByCard)) {
       const cardId = parseInt(cardIdText, 10);
-      const pendingCount = images.filter((img: any) => img.status === 'pending' || img.status === 'generating').length;
-      const completedCount = images.filter((img: any) => img.status === 'completed' && img.image_url).length;
-      const failedCount = images.filter((img: any) => img.status === 'failed').length;
-      const selectedImage = images.find((img: any) => img.id === img.selected_image_id && img.image_url)
-        || images.find((img: any) => img.is_selected && img.image_url)
-        || images.find((img: any) => img.status === 'completed' && img.image_url)
-        || null;
+      const summary = summarizeWorkspaceCardImages(images);
 
       cardsSummary[cardId] = {
         card_id: cardId,
-        pending_count: pendingCount,
-        completed_count: completedCount,
-        failed_count: failedCount,
-        selected_image: selectedImage ? {
-          id: selectedImage.id,
-          image_url: selectedImage.image_url,
-          size: selectedImage.size,
-          started_at: selectedImage.generation_started_at || null,
-          completed_at: selectedImage.generation_completed_at || null,
-          created_at: selectedImage.created_at,
+        pending_count: summary.pendingCount,
+        completed_count: summary.completedCount,
+        failed_count: summary.failedCount,
+        selected_image: summary.selectedImage ? {
+          id: summary.selectedImage.id,
+          image_url: summary.selectedImage.image_url,
+          model_name: summary.selectedImage.model_name_from_log || null,
+          size: summary.selectedImage.size,
+          started_at: summary.selectedImage.generation_started_at || null,
+          completed_at: summary.selectedImage.generation_completed_at || null,
+          created_at: summary.selectedImage.created_at,
         } : null,
         images,
       };
@@ -626,6 +691,14 @@ workspaceRouter.delete('/cards/:id', authMiddleware, async (req: AuthRequest, re
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
+    query(
+      'UPDATE prompt_cards SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND selected_image_id IS NOT NULL',
+      [req.params.id]
+    );
+
+    query('DELETE FROM workspace_api_logs WHERE card_id = ?', [req.params.id]);
+    query('DELETE FROM chat_tasks WHERE card_id = ?', [req.params.id]);
+
     query('DELETE FROM prompt_cards WHERE id = ?', [req.params.id]);
 
     const taskId = cardCheck.rows[0].task_id;
@@ -658,6 +731,16 @@ workspaceRouter.post('/cards/batch-delete', authMiddleware, async (req: AuthRequ
     const ownedIds = cardCheck.rows.map((r: any) => r.id);
     const taskIds = [...new Set(cardCheck.rows.map((r: any) => r.task_id))];
     const ownedPlaceholders = ownedIds.map(() => '?').join(',');
+
+    query(
+      `UPDATE prompt_cards
+       SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id IN (${ownedPlaceholders}) AND selected_image_id IS NOT NULL`,
+      ownedIds
+    );
+
+    query(`DELETE FROM workspace_api_logs WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
+    query(`DELETE FROM chat_tasks WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
 
     query(`DELETE FROM prompt_cards WHERE id IN (${ownedPlaceholders})`, ownedIds);
 
@@ -920,7 +1003,10 @@ workspaceRouter.get('/cards/:id/images', authMiddleware, async (req: AuthRequest
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
     const images = query(
-      'SELECT * FROM card_images WHERE card_id = ? ORDER BY created_at ASC',
+      `SELECT ci.*, wl.api_config_name as model_name
+       FROM card_images ci
+       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
+       WHERE ci.card_id = ? ORDER BY ci.created_at ASC`,
       [req.params.id]
     );
 

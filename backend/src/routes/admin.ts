@@ -433,19 +433,174 @@ adminRouter.get('/logs/tasks/:id', authMiddleware, adminMiddlewareRealtime, asyn
        WHERE t.id = ?`,
       [req.params.id]
     );
-    if (result.rows.length === 0) {
+    if (!result.rows[0]) {
       return res.status(404).json({ error: '任务不存在' });
     }
-    // 获取 API 调用记录
-    const callLogs = query(
-      'SELECT * FROM api_call_logs WHERE task_id = ? ORDER BY call_index ASC',
-      [req.params.id]
-    );
-    const task = result.rows[0];
-    task.api_call_logs = callLogs.rows;
-    return res.json({ task });
+    const apiCallLogs = query('SELECT * FROM api_call_logs WHERE task_id = ? ORDER BY call_index', [req.params.id]);
+    return res.json({ task: { ...result.rows[0], api_call_logs: apiCallLogs.rows } });
   } catch {
     return res.status(500).json({ error: '获取任务详情失败' });
+  }
+});
+
+// 获取实时队列状态
+adminRouter.get('/queue/status', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
+  try {
+    // 获取生图队列任务
+    const imageTasks = query(
+      `SELECT 
+        t.id, 
+        t.user_id, 
+        t.model_id,
+        t.prompt, 
+        t.status, 
+        t.priority, 
+        t.task_type,
+        t.source,
+        t.retry_count,
+        t.created_at, 
+        t.started_at,
+        u.username, 
+        m.display_name as model_name,
+        m.name as model_key
+       FROM generation_tasks t
+       JOIN users u ON t.user_id = u.id
+       LEFT JOIN models m ON t.model_id = m.id
+       WHERE t.status IN ('queued', 'processing')
+       ORDER BY t.priority DESC, t.created_at ASC
+       LIMIT 100`
+    );
+
+    // 获取对话队列任务
+    const chatTasks = query(
+      `SELECT 
+        ct.id, 
+        ct.user_id, 
+        ct.chat_api_id,
+        ct.task_type,
+        ct.original_prompt,
+        ct.status, 
+        ct.retry_count,
+        ct.created_at, 
+        ct.started_at,
+        u.username, 
+        c.name as api_name
+       FROM chat_tasks ct
+       JOIN users u ON ct.user_id = u.id
+       LEFT JOIN chat_api_configs c ON ct.chat_api_id = c.id
+       WHERE ct.status IN ('queued', 'processing')
+       ORDER BY ct.created_at ASC
+       LIMIT 100`
+    );
+
+    // 获取模型并发状态
+    const modelStats = query(
+      `SELECT 
+        m.id,
+        m.name,
+        m.display_name,
+        m.max_concurrent,
+        m.is_active,
+        (SELECT COUNT(*) FROM generation_tasks t WHERE t.model_id = m.id AND t.status = 'processing') as active_count,
+        (SELECT COUNT(*) FROM generation_tasks t WHERE t.model_id = m.id AND t.status = 'queued') as queued_count
+       FROM models m
+       WHERE m.is_active = 1`
+    );
+
+    // 获取对话API并发状态
+    const chatApiStats = query(
+      `SELECT 
+        c.id,
+        c.name,
+        c.max_concurrent,
+        c.status,
+        (SELECT COUNT(*) FROM chat_tasks ct WHERE ct.chat_api_id = c.id AND ct.status = 'processing') as active_count,
+        (SELECT COUNT(*) FROM chat_tasks ct WHERE ct.chat_api_id = c.id AND ct.status = 'queued') as queued_count
+       FROM chat_api_configs c
+       WHERE c.status = 'active'`
+    );
+
+    return res.json({
+      image_tasks: imageTasks.rows,
+      chat_tasks: chatTasks.rows,
+      model_stats: modelStats.rows,
+      chat_api_stats: chatApiStats.rows,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('获取队列状态失败:', error);
+    return res.status(500).json({ error: '获取队列状态失败' });
+  }
+});
+
+// 取消生图任务
+adminRouter.post('/queue/cancel-image/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
+  try {
+    const taskId = parseInt(String(req.params.id));
+    const task = query('SELECT * FROM generation_tasks WHERE id = ?', [taskId]);
+    
+    if (!task.rows[0]) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+
+    const currentTask = task.rows[0];
+    if (currentTask.status !== 'queued' && currentTask.status !== 'processing') {
+      return res.status(400).json({ error: '只能取消排队中或处理中的任务' });
+    }
+
+    // 标记任务为失败
+    query(
+      "UPDATE generation_tasks SET status = 'failed', error_message = '管理员手动取消', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [taskId]
+    );
+
+    // 如果是工作台任务，同步更新工作台状态
+    if (currentTask.source === 'workspace') {
+      query(
+        "UPDATE card_images SET status = 'failed', error_message = '管理员手动取消' WHERE generation_task_id = ?",
+        [taskId]
+      );
+    }
+
+    // 退还积分
+    const creditsType = currentTask.credits_type === 'project' ? 'project_credits' : 'creative_credits';
+    query(
+      `UPDATE users SET ${creditsType} = ${creditsType} + ? WHERE id = ?`,
+      [currentTask.credits_charged, currentTask.user_id]
+    );
+
+    return res.json({ message: '任务已取消' });
+  } catch (error) {
+    console.error('取消生图任务失败:', error);
+    return res.status(500).json({ error: '取消任务失败' });
+  }
+});
+
+// 取消对话任务
+adminRouter.post('/queue/cancel-chat/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
+  try {
+    const taskId = parseInt(String(req.params.id));
+    const task = query('SELECT * FROM chat_tasks WHERE id = ?', [taskId]);
+    
+    if (!task.rows[0]) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+
+    const currentTask = task.rows[0];
+    if (currentTask.status !== 'queued' && currentTask.status !== 'processing') {
+      return res.status(400).json({ error: '只能取消排队中或处理中的任务' });
+    }
+
+    // 标记任务为失败
+    query(
+      "UPDATE chat_tasks SET status = 'failed', error_message = '管理员手动取消', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [taskId]
+    );
+
+    return res.json({ message: '任务已取消' });
+  } catch (error) {
+    console.error('取消对话任务失败:', error);
+    return res.status(500).json({ error: '取消任务失败' });
   }
 });
 

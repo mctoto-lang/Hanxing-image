@@ -43,6 +43,7 @@ interface Model {
   is_active: boolean
   visible_in_generate: boolean
   visible_in_canvas: boolean
+  visible_in_product: boolean
   supports_reference_image: boolean
   max_reference_images: number
   reference_image_field: string
@@ -66,6 +67,7 @@ interface ModelForm {
   task_timeout: string
   visible_in_generate: boolean
   visible_in_canvas: boolean
+  visible_in_product: boolean
   supports_reference_image: boolean
   max_reference_images: string
   reference_image_field: string
@@ -105,6 +107,7 @@ const emptyForm: ModelForm = {
   task_timeout: '0',
   visible_in_generate: true,
   visible_in_canvas: true,
+  visible_in_product: true,
   supports_reference_image: false,
   max_reference_images: '1',
   reference_image_field: 'image_url',
@@ -173,6 +176,7 @@ export default function AdminModels() {
       task_timeout: String(model.task_timeout ?? 0),
       visible_in_generate: model.visible_in_generate !== false,
       visible_in_canvas: model.visible_in_canvas !== false,
+      visible_in_product: model.visible_in_product !== false,
       supports_reference_image: !!model.supports_reference_image,
       max_reference_images: String(model.max_reference_images || 1),
       reference_image_field: model.reference_image_field || 'image_url',
@@ -257,6 +261,7 @@ export default function AdminModels() {
         task_timeout: parseInt(form.task_timeout) || 0,
         visible_in_generate: form.visible_in_generate,
         visible_in_canvas: form.visible_in_canvas,
+        visible_in_product: form.visible_in_product,
         supports_reference_image: form.supports_reference_image,
         max_reference_images: parseInt(form.max_reference_images) || 1,
         reference_image_field: form.reference_image_field || 'image_url',
@@ -471,6 +476,11 @@ export default function AdminModels() {
           {row.original.visible_in_canvas !== false && (
             <Badge variant="outline" className="text-xs bg-green-50 text-green-600 border-green-200">
               项目创作
+            </Badge>
+          )}
+          {row.original.visible_in_product !== false && (
+            <Badge variant="outline" className="text-xs bg-orange-50 text-orange-600 border-orange-200">
+              商品主图
             </Badge>
           )}
         </div>
@@ -916,8 +926,15 @@ export default function AdminModels() {
                   />
                   <span className="text-sm">项目创作可见</span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={form.visible_in_product}
+                    onCheckedChange={(checked) => setForm({ ...form, visible_in_product: !!checked })}
+                  />
+                  <span className="text-sm">商品主图可见</span>
+                </label>
               </div>
-              <p className="text-[11px] text-muted-foreground">设置模型在自由创作和项目创作页面的可见性，未勾选的页面将无法选择该模型</p>
+              <p className="text-[11px] text-muted-foreground">设置模型在不同页面的可见性，未勾选的页面将无法选择该模型</p>
             </div>
 
             <div className="flex flex-col gap-3">

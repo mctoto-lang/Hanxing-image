@@ -22,6 +22,39 @@ const generateLimiter = rateLimit({
   message: { error: '请求过于频繁，请稍后重试' },
 });
 
+// 批量查询任务状态（供前端轮询使用）
+// GET /api/tasks?ids=1,2,3
+taskRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const idsParam = req.query.ids as string | undefined;
+    if (!idsParam) {
+      return res.json({ tasks: [] });
+    }
+    const ids = idsParam
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length === 0) {
+      return res.json({ tasks: [] });
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const result = query(
+      `SELECT id, status, result_images, error_message, template_info FROM generation_tasks WHERE user_id = ? AND id IN (${placeholders})`,
+      [req.userId, ...ids]
+    );
+    const tasks = result.rows.map((t: any) => ({
+      id: t.id,
+      status: t.status,
+      result_images: t.result_images ? JSON.parse(t.result_images) : [],
+      error_message: t.error_message,
+      template_info: t.template_info ? JSON.parse(t.template_info) : undefined,
+    }));
+    return res.json({ tasks });
+  } catch {
+    return res.status(500).json({ error: '查询任务状态失败' });
+  }
+});
+
 taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRequest, res) => {
   try {
     const { model_id, prompt, image_size, image_count, source, reference_images } = req.body;

@@ -278,6 +278,9 @@ export default function AdminLogs() {
     if (task.task_type === 'workspace_single' || task.source === 'workspace') {
       return <Badge className="bg-purple-500 hover:bg-purple-600">批量单图</Badge>
     }
+    if (task.source === 'product') {
+      return <Badge className="bg-orange-500 hover:bg-orange-600">商品主图</Badge>
+    }
     if (task.source === 'project') {
       return <Badge variant="default">工作项目</Badge>
     }

@@ -10,6 +10,7 @@ const GeneratePage = lazy(() => import('./pages/GeneratePage'))
 const HistoryPage = lazy(() => import('./pages/HistoryPage'))
 const CanvasPage = lazy(() => import('./pages/CanvasPage'))
 const WorkspacePage = lazy(() => import('./pages/WorkspacePage'))
+const ProductImagePage = lazy(() => import('./pages/ProductImagePage'))
 const MainLayout = lazy(() => import('./layouts/MainLayout'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -45,6 +46,7 @@ function App() {
             <Route path="history" element={<HistoryPage />} />
             <Route path="canvas" element={<CanvasPage />} />
             <Route path="workspace" element={<WorkspacePage />} />
+            <Route path="product-image" element={<ProductImagePage />} />
           </Route>
         </Routes>
       </Suspense>

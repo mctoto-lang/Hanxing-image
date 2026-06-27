@@ -7,8 +7,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import AdminPanel from '@/components/AdminPanel'
+import { FolderKanbanIcon, GridViewIcon, HugeiconsIcon, PictureInPictureOnIcon, Shield01Icon, StarsIcon, Layers01Icon } from '@/components/icons'
 import { Suspense, useState, useEffect, useRef } from 'react'
 import type { FC } from 'react'
+import type { IconSvgElement } from '@/components/icons'
 import Spinner from '@/components/Spinner'
 
 const NAV_WIDTH = 72
@@ -17,42 +19,14 @@ const LogoIcon: FC = () => (
   <img src="/logo.svg" alt="寒星" className="h-7 w-7" />
 )
 
-const GenerateIcon: FC = () => (
-  <svg viewBox="47.2 47.2 929.6 929.6" className="h-5 w-5" fill="currentColor">
-    <path d="M512 51.2l146.56 314.24L972.8 512l-314.24 146.56L512 972.8l-146.56-314.24L51.2 512l314.24-146.56L512 51.2z" />
-  </svg>
-)
-
-const AssetsIcon: FC = () => (
-  <svg viewBox="-8 34.8 1040 912" className="h-5 w-5" fill="currentColor">
-    <path d="M938.7 298.7v-85.3c0-47.1-38.2-85.3-85.3-85.3H512c0-47.1-38.2-85.3-85.3-85.3h-256c-47.1 0-85.3 38.2-85.3 85.3v170.7C38.2 298.7 0 336.9 0 384v469.3c0 47.1 38.2 85.3 85.3 85.3h853.3c47.1 0 85.3-38.2 85.3-85.3V384c0.1-47.1-38.1-85.3-85.2-85.3zM149.3 128c0-11.8 9.6-21.3 21.3-21.3h256c11.8 0 21.3 9.6 21.3 21.3v64h405.3c11.8 0 21.3 9.6 21.3 21.3v85.3H149.3V128zM960 853.3c0 11.8-9.6 21.3-21.3 21.3H85.3c-11.8 0-21.3-9.6-21.3-21.3V384c0-11.8 9.6-21.3 21.3-21.3h853.3c11.8 0 21.3 9.6 21.3 21.3v469.3z" />
-  </svg>
-)
-
-const CanvasIcon: FC = () => (
-  <svg viewBox="160.3 93.9 740.6 807.2" className="h-5 w-5" fill="currentColor">
-    <path d="M808.1 142.3h-99.9v-37c0-4.1-3.3-7.4-7.4-7.4H649c-4.1 0-7.4 3.3-7.4 7.4v37H501v-37c0-4.1-3.3-7.4-7.4-7.4h-51.8c-4.1 0-7.4 3.3-7.4 7.4v37h-99.9c-16.4 0-29.6 13.2-29.6 29.6v111h-88.8c-16.4 0-29.6 13.2-29.6 29.6v584.6c0 16.4 13.2 29.6 29.6 29.6h473.6c16.4 0 29.6-13.2 29.6-29.6v-88.8h88.8c16.4 0 29.6-13.2 29.6-29.6V171.9c0-16.3-13.2-29.6-29.6-29.6zM652.7 860.1H253.1V349.5h201.6v160.9c0 20.4 16.6 37 37 37h160.9v312.7z m0-371.8H513.9V349.5h0.2l138.6 138.6v0.2z m118.4 253.4h-51.8V460.5L541.7 282.9H371.5v-74h62.9v29.6c0 4.1 3.3 7.4 7.4 7.4h51.8c4.1 0 7.4-3.3 7.4-7.4v-29.6h140.6v29.6c0 4.1 3.3 7.4 7.4 7.4h51.8c4.1 0 7.4-3.3 7.4-7.4v-29.6h62.9v532.8z m0 0" />
-  </svg>
-)
-
-const AdminIcon: FC = () => (
-  <svg viewBox="0 0 1024 1024" className="h-5 w-5" fill="currentColor">
-    <path d="M617.376 929.968c-8 17.648-25.152 29.136-44.096 29.136L451.2 960a48.336 48.336 0 0 1-44.16-28.576L370.72 854.4a331.568 331.568 0 0 1-42.992-21.76l-77.776 18.944a47.872 47.872 0 0 1-50.048-17.472L123.84 736.848c-11.68-15.44-14.032-36-5.696-53.2l37.28-76.752a471.776 471.776 0 0 1-9.392-43.792l-63.424-50.368a51.088 51.088 0 0 1-17.376-50.56l26.8-121.328c4.256-19.168 18.72-33.952 37.152-37.632l81.568-18.192a421.488 421.488 0 0 1 26.832-33.856l-1.28-81.92c-0.512-19.2 10.192-36.8 27.552-46.048l109.296-54.048a48.688 48.688 0 0 1 52.64 5.84l65.008 53.28a339.488 339.488 0 0 1 45.824 0.416l61.984-51.92a48.688 48.688 0 0 1 52.56-6.336l109.856 53.664a50.72 50.72 0 0 1 27.952 45.408l-0.416 85.6c9.168 10.528 18.048 22.08 26.048 33.84l78.24 16.432c18.688 3.728 33.552 18.608 37.76 37.584l28.128 120.96c4.208 19.008-2.24 38.48-16.976 50.608l-65.6 53.376c-2.832 16.624-5.6 29.472-9.28 41.728l36.752 72.704c8.448 17.44 6.704 37.984-4.8 53.168l-74.24 98.496c-11.728 15.44-30.928 22.752-49.424 18.512l-81.488-18.16a329.28 329.28 0 0 1-42.976 21.328l-33.312 74.288zM312.32 745.296c4-1.152 8.08-1.728 12.144-1.728a51.52 51.52 0 0 1 28.48 8.4 286.48 286.48 0 0 0 63.488 31.808c12.64 4.4 23.312 14.192 29.6 26.816l33.648 71.28 63.424-0.8 30.528-68.528c6.144-13.44 16.864-23.408 30.128-27.84a284.784 284.784 0 0 0 63.472-31.296 51.2 51.2 0 0 1 39.248-7.296l74.992 17.024 38.88-51.728-34.032-67.232a52 52 0 0 1-2.832-41.68c7.44-21.888 12.32-43.68 14.56-65.616 1.6-13.808 8.368-26.496 18.96-35.488l60.784-49.04-14.848-63.456-72.16-15.248a50.944 50.944 0 0 1-33.584-23.936c-12.4-20.064-26.08-38.016-40.992-53.344a54.336 54.336 0 0 1-14.912-37.184l0.448-78.832-57.536-28-57.12 48.032c-11.504 9.632-25.424 14.752-39.84 14.752a85.44 85.44 0 0 1-8.208-0.4 286.272 286.272 0 0 0-68.512-0.624 53.04 53.04 0 0 1-40.032-14.064l-60.032-49.216-57.12 28.384 1.216 75.344a54.128 54.128 0 0 1-15.2 38.576 282.464 282.464 0 0 0-39.888 50.272 51.088 51.088 0 0 1-32.96 23.648l-75.264 16.8-14.128 63.776 58.624 46.544a51.2 51.2 0 0 1 18.336 47.408 294.976 294.976 0 0 0 0.384 70.256 51.456 51.456 0 0 1-18.56 47.808l-34.448 28.224 32.256 43.424 71.84-17.408zM512 672a160 160 0 1 1 0-320 160 160 0 0 1 0 320z m0-64a96 96 0 1 0 0-192 96 96 0 0 0 0 192z" />
-  </svg>
-)
-
-const WorkspaceIcon: FC = () => (
-  <svg viewBox="60.5 88.4 903.4 845.9" className="h-5 w-5" fill="currentColor">
-    <path d="M864 92.4H258c-52.9 0-95.9 43-95.9 95.9v70.5h-1.7c-52.9 0-95.9 43-95.9 95.9v479.7c0 52.9 43 95.9 95.9 95.9h479.7c32.1 0 60.5-15.9 77.9-40.2h146c52.9 0 95.9-43 95.9-95.9v-606c0-52.8-43-95.8-95.9-95.8zM664.5 834.5c0 13.5-10.9 24.4-24.4 24.4H160.4c-13.5 0-24.4-10.9-24.4-24.4V354.8c0-13.5 10.9-24.4 24.4-24.4h479.7c13.5 0 24.4 10.9 24.4 24.4v479.7z m223.9-40.1c0 13.5-10.9 24.4-24.4 24.4H736v-464c0-52.9-43-95.9-95.9-95.9H233.6v-70.5c0-13.5 10.9-24.4 24.4-24.4h606c13.5 0 24.4 10.9 24.4 24.4v606z" />
-    <path d="M511.6 557.5H431v-80.6c0-19.8-16-35.8-35.8-35.8s-35.8 16-35.8 35.8v80.6h-80.6c-19.8 0-35.8 16-35.8 35.8 0 19.8 16 35.8 35.8 35.8h80.6v80.6c0 19.8 16 35.8 35.8 35.8s35.8-16 35.8-35.8V629h80.6c19.8 0 35.8-16 35.8-35.8 0-19.7-16-35.7-35.8-35.7z" />
-  </svg>
-)
+const NavIcon = ({ icon }: { icon: IconSvgElement }) => <HugeiconsIcon icon={icon} size={20} strokeWidth={1.7} />
 
 const navItems = [
-  { key: 'generate', to: '/', icon: GenerateIcon, label: '自由创作' },
-  { key: 'canvas', to: '/canvas', icon: CanvasIcon, label: '项目创作' },
-  { key: 'history', to: '/history', icon: AssetsIcon, label: '资产管理' },
-  { key: 'workspace', to: '/workspace', icon: WorkspaceIcon, label: '批量生图' },
+  { key: 'generate', to: '/', icon: StarsIcon, label: '自由创作' },
+  { key: 'canvas', to: '/canvas', icon: Layers01Icon, label: '项目创作' },
+  { key: 'history', to: '/history', icon: FolderKanbanIcon, label: '资产管理' },
+  { key: 'workspace', to: '/workspace', icon: GridViewIcon, label: '批量生图' },
+  { key: 'product', to: '/product-image', icon: PictureInPictureOnIcon, label: '商品主图' },
 ]
 
 const allPageKeys = navItems.map(item => item.key)
@@ -182,7 +156,6 @@ export default function MainLayout() {
             const isActive = item.to === '/'
               ? location.pathname === '/'
               : location.pathname.startsWith(item.to)
-            const IconComponent = item.icon
             return (
               <Tooltip key={item.to}>
                 <TooltipTrigger
@@ -199,7 +172,7 @@ export default function MainLayout() {
                     />
                   }
                 >
-                  <IconComponent />
+                  <NavIcon icon={item.icon} />
                 </TooltipTrigger>
                 <TooltipContent side="right">{item.label}</TooltipContent>
               </Tooltip>
@@ -221,7 +194,7 @@ export default function MainLayout() {
                   />
                 }
               >
-                <AdminIcon />
+                <NavIcon icon={Shield01Icon} />
               </TooltipTrigger>
               <TooltipContent side="right">系统管理</TooltipContent>
             </Tooltip>

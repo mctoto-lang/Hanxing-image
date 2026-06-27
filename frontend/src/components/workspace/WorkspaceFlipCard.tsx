@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { Wand2, ImagePlus, RotateCcw, Loader2, Trash2, FlipHorizontal, Eye, MoreHorizontal, AlertTriangle } from 'lucide-react'
+import { Wand2, ImagePlus, RotateCcw, Loader2, Trash2, FlipHorizontal, Eye, MoreHorizontal, AlertTriangle, Search, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -42,6 +42,22 @@ interface FlipCardProps {
   batchGeneratingImage?: boolean
 }
 
+export function shouldAutoFlipToImage({
+  hasDisplayImage,
+  displayImageChanged,
+  isEditingPrompt,
+  isManuallyFlippedToBack,
+}: {
+  hasDisplayImage: boolean
+  displayImageChanged: boolean
+  isEditingPrompt: boolean
+  isManuallyFlippedToBack: boolean
+}) {
+  if (!hasDisplayImage || !displayImageChanged) return false
+  if (isEditingPrompt || isManuallyFlippedToBack) return false
+  return true
+}
+
 export default memo(function WorkspaceFlipCard({
   card,
   images,
@@ -73,6 +89,8 @@ export default memo(function WorkspaceFlipCard({
   const cardRef = useRef(card)
   const onCardUpdatedRef = useRef(onCardUpdated)
   const previousDisplayImageUrlRef = useRef<string | null>(null)
+  const isEditingPromptRef = useRef(false)
+  const manuallyFlippedToBackRef = useRef(!card.sel_img_url)
 
   const completedImages = images.filter(i => i.status === 'completed')
   const failedImages = images.filter(i => i.status === 'failed')
@@ -93,6 +111,7 @@ export default memo(function WorkspaceFlipCard({
 
   useEffect(() => {
     if (flipAllToImage && displayImageUrl && isFlipped) {
+      manuallyFlippedToBackRef.current = false
       setIsFlipped(false)
     }
   }, [flipAllToImage, displayImageUrl, isFlipped])
@@ -100,7 +119,14 @@ export default memo(function WorkspaceFlipCard({
   useEffect(() => {
     const previousDisplayImageUrl = previousDisplayImageUrlRef.current
     previousDisplayImageUrlRef.current = displayImageUrl
-    if (displayImageUrl && displayImageUrl !== previousDisplayImageUrl) {
+
+    if (shouldAutoFlipToImage({
+      hasDisplayImage: !!displayImageUrl,
+      displayImageChanged: !!displayImageUrl && displayImageUrl !== previousDisplayImageUrl,
+      isEditingPrompt: isEditingPromptRef.current,
+      isManuallyFlippedToBack: manuallyFlippedToBackRef.current,
+    })) {
+      manuallyFlippedToBackRef.current = false
       setIsFlipped(false)
     }
   }, [displayImageUrl])
@@ -112,12 +138,14 @@ export default memo(function WorkspaceFlipCard({
   }, [])
 
   const handlePromptChange = (val: string) => {
+    isEditingPromptRef.current = true
     setPrompt(val)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => savePrompt(val), 800)
   }
 
   const handlePromptBlur = () => {
+    isEditingPromptRef.current = false
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     savePrompt(prompt)
   }
@@ -187,6 +215,7 @@ export default memo(function WorkspaceFlipCard({
       })
       if (!res.ok) throw new Error()
       toast.success('已提交生图任务')
+      manuallyFlippedToBackRef.current = false
       setIsFlipped(false)
     } catch {
       toast.error('提交生图失败')
@@ -213,6 +242,7 @@ export default memo(function WorkspaceFlipCard({
       sel_img_url: image.image_url,
       sel_img_id: image.id,
       selected_image_id: image.id,
+      sel_img_model_name: image.model_name || null,
       sel_img_size: image.size,
       sel_img_started_at: image.generation_started_at || null,
       sel_img_completed_at: image.generation_completed_at || null,
@@ -223,6 +253,61 @@ export default memo(function WorkspaceFlipCard({
   const openImagePreview = () => {
     if (!displayImageUrl) return
     setPreviewOpen(true)
+  }
+
+  const openImageInNewTab = () => {
+    if (!displayImageUrl) return
+    const imageUrl = toImageSrc(displayImageUrl)
+    const escapedImageUrl = imageUrl
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+
+    const previewHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>图片预览</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: #0a0a0a;
+      }
+      body {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 24px;
+      }
+      img {
+        display: block;
+        max-width: none;
+        width: auto;
+        height: auto;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <img src="${escapedImageUrl}" alt="图片预览" />
+  </body>
+</html>`
+
+    const blob = new Blob([previewHtml], { type: 'text/html;charset=utf-8' })
+    const previewUrl = URL.createObjectURL(blob)
+    const opened = window.open(previewUrl, '_blank')
+
+    if (!opened) {
+      URL.revokeObjectURL(previewUrl)
+      toast.error('无法打开新标签页，请检查浏览器拦截设置')
+      return
+    }
+
+    window.setTimeout(() => URL.revokeObjectURL(previewUrl), 60_000)
   }
 
   const openErrorDialog = () => {
@@ -256,9 +341,14 @@ export default memo(function WorkspaceFlipCard({
           className={cn(
             'relative rounded-2xl border overflow-hidden transition-all duration-200 h-full',
             batchMode && 'cursor-pointer',
-            isSelected && batchMode ? 'ring-2 ring-gray-400 border-gray-400/50 bg-gray-50/5' : 'border-border bg-card',
+            isSelected && batchMode ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50/20' : 'border-border bg-card',
           )}
         >
+        {batchMode && isSelected && (
+          <div className="absolute right-2.5 top-2.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm">
+            <Check className="h-4 w-4" />
+          </div>
+        )}
         <div className="absolute inset-0" style={{ perspective: '1000px' }}>
           <div
             className="relative w-full h-full transition-transform duration-500"
@@ -344,6 +434,20 @@ export default memo(function WorkspaceFlipCard({
                       <Tooltip>
                         <TooltipTrigger
                           type="button"
+                          onClick={(e) => { e.stopPropagation(); openImageInNewTab() }}
+                          className="flex h-7 w-7 items-center justify-center rounded-lg bg-black/45 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-black/65"
+                        >
+                          <Search className="h-3.5 w-3.5" />
+                        </TooltipTrigger>
+                        <TooltipContent side="left">新标签页查看原图</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                  {hasImage && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger
+                          type="button"
                           onClick={(e) => { e.stopPropagation(); openImagePreview() }}
                           className="flex h-7 items-center justify-center rounded-lg bg-black/45 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-black/65 px-2"
                         >
@@ -357,7 +461,11 @@ export default memo(function WorkspaceFlipCard({
                     <Tooltip>
                       <TooltipTrigger
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setIsFlipped(true) }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            manuallyFlippedToBackRef.current = true
+                            setIsFlipped(true)
+                          }}
                         className="flex h-7 items-center justify-center rounded-lg bg-black/45 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-black/65 px-2"
                         aria-label="翻转卡片"
                       >
@@ -385,20 +493,39 @@ export default memo(function WorkspaceFlipCard({
               {batchMode && (
                 <div className="absolute inset-0 z-10 cursor-pointer" onClick={handleCardClick} />
               )}
-              <div className="flex items-center justify-between gap-2 shrink-0">
-                <span className="text-[10px] text-muted-foreground font-medium">#{card.card_index} 提示词</span>
-                {/* 生成失败：红色圆角矩形标签 */}
-                {hasFailedImage && (
-                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-red-500 text-red-500 font-medium">
-                    图片生成失败
-                  </span>
-                )}
-                {/* 已生成X张：绿色圆角矩形标签（生成中时不显示） */}
-                {!hasFailedImage && !hasGeneratingImage && completedImages.length > 0 && (
-                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-emerald-500 text-emerald-500 font-medium">
-                    已生成{completedImages.length}张
-                  </span>
-                )}
+              <div className="flex items-start justify-between gap-2 shrink-0">
+                <span className="text-[10px] text-muted-foreground font-medium pt-1">#{card.card_index} 提示词</span>
+                <div className="flex items-center gap-1.5">
+                  {hasFailedImage && (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-red-500 text-red-500 font-medium">
+                      图片生成失败
+                    </span>
+                  )}
+                  {!hasFailedImage && !hasGeneratingImage && completedImages.length > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border border-emerald-500 text-emerald-500 font-medium">
+                      已生成{completedImages.length}张
+                    </span>
+                  )}
+                  {!batchMode && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger
+                          type="button"
+                          onClick={() => {
+                            manuallyFlippedToBackRef.current = false
+                            isEditingPromptRef.current = false
+                            setIsFlipped(false)
+                          }}
+                          className="flex h-5 w-5 items-center justify-center rounded-md border border-black bg-transparent text-black transition-colors hover:bg-black/10"
+                          aria-label="返回图片面"
+                        >
+                          <FlipHorizontal className="h-3 w-3" />
+                        </TooltipTrigger>
+                        <TooltipContent side="left">返回图片面</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </div>
               </div>
 
               <Textarea
@@ -412,19 +539,6 @@ export default memo(function WorkspaceFlipCard({
 
               {!batchMode && (
                 <div className="flex justify-end gap-2 shrink-0">
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger
-                        type="button"
-                        onClick={() => setIsFlipped(false)}
-                        className="flex h-8 items-center gap-1.5 rounded-lg bg-white px-3 text-[11px] text-black transition-colors hover:bg-white/90"
-                      >
-                        <FlipHorizontal className="h-3.5 w-3.5" />
-                        翻转卡片
-                      </TooltipTrigger>
-                      <TooltipContent side="top">返回图片面</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -475,7 +589,7 @@ export default memo(function WorkspaceFlipCard({
         imageUrl={displayImageUrl}
         item={{
           prompt,
-          model_name: selectedImageModel?.display_name || selectedImageModel?.name,
+          model_name: card.sel_img_model_name || undefined,
           image_size: card.sel_img_size || selectedSize || undefined,
           started_at: card.sel_img_started_at || null,
           completed_at: card.sel_img_completed_at || null,

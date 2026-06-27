@@ -1,5 +1,6 @@
 import { useState, lazy, Suspense } from 'react'
-import { LayoutDashboard, Users, Shield, Cpu, Image, FileText, PanelRightClose, PanelRightOpen, Database, Settings, BookTemplate } from 'lucide-react'
+import { LayoutDashboard, Users, Shield, Cpu, Image, FileText, Database, Settings, BookTemplate, ListOrdered } from 'lucide-react'
+import { HugeiconsIcon, SidebarRightIcon, SidebarLeftIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import Spinner from '@/components/Spinner'
@@ -13,11 +14,13 @@ const AdminStorageSettings = lazy(() => import('@/pages/admin/AdminStorageSettin
 const AdminLogs = lazy(() => import('@/pages/admin/AdminLogs'))
 const AdminSettings = lazy(() => import('@/pages/admin/AdminSettings'))
 const AdminWorkspaceTemplates = lazy(() => import('@/pages/admin/AdminWorkspaceTemplates'))
+const AdminQueue = lazy(() => import('@/pages/admin/AdminQueue'))
 
 const PANEL_NAV_WIDTH = 200
 
 const adminTabs = [
   { key: 'dashboard', icon: LayoutDashboard, label: '概览', Component: AdminDashboard },
+  { key: 'queue', icon: ListOrdered, label: '服务队列', Component: AdminQueue },
   { key: 'users', icon: Users, label: '用户管理', Component: AdminUsers },
   { key: 'groups', icon: Shield, label: '权限组', Component: AdminGroups },
   { key: 'models', icon: Cpu, label: '模型/API', Component: AdminModels },
@@ -48,7 +51,7 @@ export default function AdminPanel() {
               onClick={() => setShowNav(false)}
               className="text-muted-foreground"
             >
-              <PanelRightClose className="h-4 w-4" />
+              <HugeiconsIcon icon={SidebarRightIcon} size={16} strokeWidth={1.8} />
             </Button>
           </div>
 
@@ -84,7 +87,7 @@ export default function AdminPanel() {
             onClick={() => setShowNav(true)}
             className="absolute left-4 top-4 gap-1.5 px-3 py-1.5 shadow-sm z-10"
           >
-            <PanelRightOpen className="h-4 w-4" />
+            <HugeiconsIcon icon={SidebarLeftIcon} size={16} strokeWidth={1.8} />
             <span>导航</span>
           </Button>
         )}

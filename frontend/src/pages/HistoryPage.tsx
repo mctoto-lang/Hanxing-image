@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
-import { ImageOff, Search, LayoutGrid, Columns3, Loader2 } from 'lucide-react'
+import { ImageOff, Search, LayoutGrid, Columns3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Task {
@@ -52,14 +52,14 @@ interface AssetImageItem {
 const sourceOptions: { value: SourceFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'creative', label: '自由创作' },
-  { value: 'project', label: '工作项目' },
-  { value: 'batch', label: '批量生成' },
+  { value: 'project', label: '项目创作' },
+  { value: 'batch', label: '批量生图' },
 ]
 
 const kindConfig: Record<AssetKind, { label: string; className: string }> = {
   project: { label: '项目', className: 'bg-blue-500/95 text-white' },
   creative: { label: '创作', className: 'bg-purple-500/95 text-white' },
-  batch: { label: '批量', className: 'bg-yellow-400/95 text-yellow-950' },
+  batch: { label: '批量', className: 'bg-yellow-400/95 text-white' },
 }
 
 function getDateKey(dateStr: string): string {
@@ -348,22 +348,6 @@ export default function HistoryPage() {
     setVisibleCount((prev) => prev + PAGE_SIZE)
   }, [])
 
-  // 缩略图视图：IntersectionObserver 懒加载
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (viewMode !== 'grid' || !hasMore) return
-    const el = sentinelRef.current
-    if (!el) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) loadMore()
-      },
-      { rootMargin: '400px' }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [viewMode, hasMore, loadMore])
-
   const grouped = useMemo(() => {
     const map = new Map<string, AssetImageItem[]>()
     for (const item of visibleImages) {
@@ -380,6 +364,8 @@ export default function HistoryPage() {
     setPreviewItem(item)
     setPreviewOpen(true)
   }, [])
+
+  const selectedSourceLabel = sourceOptions.find(option => option.value === sourceFilter)?.label ?? '全部'
 
   const isLoading = sourceFilter === 'batch' ? workspaceLoading : sourceFilter === 'all' ? loading || workspaceLoading : loading
 
@@ -422,9 +408,9 @@ export default function HistoryPage() {
           </div>
           <Select value={sourceFilter} onValueChange={(value) => value && handleFilterChange(value as SourceFilter)}>
             <SelectTrigger className="w-36">
-              <SelectValue />
+              <SelectValue>{selectedSourceLabel}</SelectValue>
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="start" side="bottom" sideOffset={6} alignItemWithTrigger={false}>
               {sourceOptions.map(option => (
                 <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
               ))}
@@ -502,12 +488,7 @@ export default function HistoryPage() {
         )}
 
         {/* 加载更多 / 懒加载 */}
-        {hasMore && viewMode === 'grid' && (
-          <div ref={sentinelRef} className="flex items-center justify-center py-6">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        )}
-        {hasMore && viewMode === 'waterfall' && (
+        {hasMore && (
           <div className="flex items-center justify-center py-6">
             <Button
               variant="outline"
@@ -515,7 +496,7 @@ export default function HistoryPage() {
               className="rounded-lg px-6"
               onClick={loadMore}
             >
-              加载更多
+              {viewMode === 'grid' ? '加载更多缩略图' : '加载更多'}
             </Button>
           </div>
         )}

@@ -1,7 +1,9 @@
 import { useState, useRef, memo } from 'react'
 import { Composer } from '@/components/ui/composer'
 import { cn, toImageSrc } from '@/lib/utils'
-import { Image, ImageOff, Loader2, PanelRightClose, History, Send, ChevronDown, X, RotateCcw, CheckCircle2, Pin, Upload, AlertTriangle, AlertCircle } from 'lucide-react'
+import { Image, ImageOff, Loader2, ChevronDown, X, RotateCcw, CheckCircle2, Pin, Upload, AlertTriangle, AlertCircle } from 'lucide-react'
+import { HugeiconsIcon, TimeScheduleIcon, CubeIcon, CropIcon, Image02Icon, ArrowUp02Icon, SidebarRightIcon } from '@/components/icons'
+import { ShineBorder } from '@/components/ui/shine-border'
 import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
 import ApiErrorDialog from '@/components/ApiErrorDialog'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -41,7 +43,7 @@ function ModelPopover({ models, selectedModel, onSelect, disabled }: {
         disabled={disabled}
         className="flex items-center gap-1 h-9 px-3 rounded-xl text-sm transition-colors cursor-pointer bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 overflow-hidden max-w-[160px]"
       >
-        <svg className="h-4 w-4 shrink-0" viewBox="0 0 1024 1024" fill="currentColor"><path d="M86.517714 244.899429L493.350857 10.013714a36.571429 36.571429 0 0 1 36.571429 0l406.834285 234.885715a36.571429 36.571429 0 0 1 18.285715 31.672v469.771428a36.571429 36.571429 0 0 1-18.285715 31.670857l-406.834285 234.885715a36.571429 36.571429 0 0 1-36.571429 0L86.516571 778.013714a36.571429 36.571429 0 0 1-18.285714-31.670857V276.571429a36.571429 36.571429 0 0 1 18.285714-31.672z m59.525715 50.203428a9.142857 9.142857 0 0 0-4.571429 7.918857v416.870857a9.142857 9.142857 0 0 0 4.571429 7.917715l361.021714 208.435428a9.142857 9.142857 0 0 0 9.142857 0l361.020571-208.434285a9.142857 9.142857 0 0 0 4.571429-7.918858V303.021714a9.142857 9.142857 0 0 0-4.571429-7.918857L516.208 86.668571a9.142857 9.142857 0 0 0-9.142857 0l-361.021714 208.434286z m365.213714 178.8l281.588571-162.574857c17.491429-10.098286 39.858286-4.105143 49.957715 13.386286 10.098286 17.491429 4.105143 39.858286-13.386286 49.957714L548.571429 536.818286V858.285714c0 20.197714-16.373714 36.571429-36.571429 36.571429-20.197714 0-36.571429-16.373714-36.571429-36.571429V537.675429L194.088 375.243429c-17.491429-10.099429-23.485714-32.466286-13.386286-49.957715 10.099429-17.491429 32.466286-23.485714 49.957715-13.386285L511.257143 473.902857z" /></svg>
+        <HugeiconsIcon icon={CubeIcon} size={16} strokeWidth={1.8} className="shrink-0" />
         <span className="truncate min-w-0">{selected?.display_name || '选择模型'}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0" />
       </PopoverTrigger>
@@ -107,7 +109,7 @@ function SizePopover({ imageSize, onSelect, disabled, width, height, onWidthChan
         disabled={disabled}
         className="flex items-center gap-1 h-9 px-3 rounded-xl text-sm transition-colors cursor-pointer bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 overflow-hidden max-w-[120px]"
       >
-        <svg className="h-4 w-4 shrink-0" viewBox="0 0 1024 1024" fill="currentColor"><path d="M625.777778 256h142.222222V398.222222h113.777778V142.222222H625.777778v113.777778zM256 398.222222V256H398.222222v-113.777778H142.222222V398.222222h113.777778zM768 625.777778v142.222222H625.777778v113.777778h256V625.777778h-113.777778zM398.222222 768H256V625.777778h-113.777778v256H398.222222v-113.777778z" /></svg>
+        <HugeiconsIcon icon={CropIcon} size={16} strokeWidth={1.8} className="shrink-0" />
         <span className="truncate min-w-0">{selected?.ratio || imageSize}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0" />
       </PopoverTrigger>
@@ -508,7 +510,7 @@ export default function GeneratePage() {
               onClick={() => setShowHistory(false)}
               className="gap-1.5 font-semibold"
             >
-              <History className="h-4 w-4" />
+              <HugeiconsIcon icon={TimeScheduleIcon} size={16} strokeWidth={1.8} />
               <span>自由创作历史</span>
             </Button>
             <div className="flex items-center gap-1">
@@ -519,7 +521,7 @@ export default function GeneratePage() {
                 onClick={() => setShowHistory(false)}
                 className="text-muted-foreground"
               >
-                <PanelRightClose className="h-4 w-4" />
+                <HugeiconsIcon icon={SidebarRightIcon} size={16} strokeWidth={1.8} />
               </Button>
             </div>
           </div>
@@ -586,7 +588,7 @@ export default function GeneratePage() {
             onClick={() => setShowHistory(true)}
             className="absolute left-4 top-4 gap-1.5 px-3 py-1.5 shadow-sm z-10"
           >
-            <History className="h-4 w-4" />
+            <HugeiconsIcon icon={TimeScheduleIcon} size={16} strokeWidth={1.8} />
             <span>历史</span>
           </Button>
         )}
@@ -608,7 +610,14 @@ export default function GeneratePage() {
             />
           )}
 
-          <div className="w-full rounded-3xl bg-zinc-100 dark:bg-zinc-800 p-4">
+          <div className="w-full rounded-3xl bg-zinc-100 dark:bg-zinc-800 p-4 relative overflow-hidden">
+            {loading && (
+              <ShineBorder
+                shineColor={["#00bbff", "#00d4ff", "#00e9ff"]}
+                duration={3}
+                borderWidth={2}
+              />
+            )}
             {referenceImages.length > 0 && (
               <div className="flex gap-2 mb-3 flex-wrap">
                 {referenceImages.map((url, idx) => (
@@ -667,7 +676,7 @@ export default function GeneratePage() {
                         : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-600',
                     )}
                   >
-                    <svg className="h-4 w-4 shrink-0" viewBox="0 0 1024 1024" fill="currentColor"><path d="M938.666667 553.92V768c0 64.8-52.533333 117.333333-117.333334 117.333333H202.666667c-64.8 0-117.333333-52.533333-117.333334-117.333333V256c0-64.8 52.533333-117.333333 117.333334-117.333333h618.666666c64.8 0 117.333333 52.533333 117.333334 117.333333v297.92z m-64-74.624V256a53.333333 53.333333 0 0 0-53.333334-53.333333H202.666667a53.333333 53.333333 0 0 0-53.333334 53.333333v344.48A290.090667 290.090667 0 0 1 192 597.333333a286.88 286.88 0 0 1 183.296 65.845334C427.029333 528.384 556.906667 437.333333 704 437.333333c65.706667 0 126.997333 16.778667 170.666667 41.962667z m0 82.24c-5.333333-8.32-21.130667-21.653333-43.648-32.917333C796.768 511.488 753.045333 501.333333 704 501.333333c-121.770667 0-229.130667 76.266667-270.432 188.693334-2.730667 7.445333-7.402667 20.32-13.994667 38.581333-7.68 21.301333-34.453333 28.106667-51.370666 13.056-16.437333-14.634667-28.554667-25.066667-36.138667-31.146667A222.890667 222.890667 0 0 0 192 661.333333c-14.464 0-28.725333 1.365333-42.666667 4.053334V768a53.333333 53.333333 0 0 0 53.333334 53.333333h618.666666a53.333333 53.333333 0 0 0 53.333334-53.333333V561.525333zM320 480a96 96 0 1 1 0-192 96 96 0 0 1 0 192z m0-64a32 32 0 1 0 0-64 32 32 0 0 0 0 64z" /></svg>
+                    <HugeiconsIcon icon={Image02Icon} size={16} strokeWidth={1.8} className="shrink-0" />
                     <span className="truncate min-w-0">参考图{referenceImages.length > 0 ? ` ${referenceImages.length}` : ''}</span>
                   </Button>
                 ) : null}
@@ -683,7 +692,7 @@ export default function GeneratePage() {
                   onClick={() => handleSubmit(prompt)}
                   disabled={loading || !prompt.trim() || !selectedModel}
                   className={cn(
-                    'rounded-full',
+                    'rounded-lg',
                     prompt.trim() && selectedModel && !loading
                       ? 'bg-[#00bbff] text-white hover:bg-[#00a3e0]'
                       : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-400 dark:text-zinc-500',
@@ -692,7 +701,7 @@ export default function GeneratePage() {
                   {loading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Send className="h-4 w-4" />
+                    <HugeiconsIcon icon={ArrowUp02Icon} size={18} strokeWidth={2} />
                   )}
                 </Button>
               </div>

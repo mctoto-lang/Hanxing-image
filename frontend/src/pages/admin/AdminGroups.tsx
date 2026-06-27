@@ -68,6 +68,7 @@ const PAGE_OPTIONS = [
   { key: 'canvas', label: '项目创作' },
   { key: 'history', label: '资产管理' },
   { key: 'workspace', label: '批量生图' },
+  { key: 'product', label: '商品主图' },
 ]
 
 export default function AdminGroups() {

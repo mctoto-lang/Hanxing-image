@@ -414,6 +414,15 @@ export function migrate() {
 
   console.log('批量生图工作台相关表已创建');
 
+  // 为 workspace_api_logs 添加 generation_task_id 字段
+  const workspaceApiLogsCols = db.prepare("PRAGMA table_info(workspace_api_logs)").all() as { name: string }[];
+  const workspaceApiLogsColNames = new Set(workspaceApiLogsCols.map(c => c.name));
+  if (!workspaceApiLogsColNames.has('generation_task_id')) {
+    db.exec("ALTER TABLE workspace_api_logs ADD COLUMN generation_task_id INTEGER REFERENCES generation_tasks(id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_workspace_api_logs_generation_task_id ON workspace_api_logs(generation_task_id)");
+    console.log('已添加 generation_task_id 字段和索引到 workspace_api_logs');
+  }
+
   const cardImageCols = db.prepare("PRAGMA table_info(card_images)").all() as { name: string }[];
   const cardImageColNames = new Set(cardImageCols.map(c => c.name));
   if (!cardImageColNames.has('generation_task_id')) {
@@ -462,6 +471,67 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_chat_tasks_chat_api_id ON chat_tasks(chat_api_id);
   `);
   console.log('对话API任务队列表已创建');
+
+  // ===== 商品主图生成功能相关表 =====
+
+  // 1. 为 models 表添加商品主图页面可见性字段
+  if (!modelColNames.has('visible_in_product')) {
+    db.exec("ALTER TABLE models ADD COLUMN visible_in_product INTEGER NOT NULL DEFAULT 0");
+    console.log('已添加 visible_in_product 字段到 models');
+  }
+
+  // 2. 为 generation_tasks 表添加模板信息字段
+  if (!taskColNames.has('template_info')) {
+    db.exec("ALTER TABLE generation_tasks ADD COLUMN template_info TEXT");
+    console.log('已添加 template_info 字段到 generation_tasks');
+  }
+
+  // 3. 创建商品主图模板表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_main_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      visibility TEXT NOT NULL DEFAULT 'private',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_main_templates_user_id ON product_main_templates(user_id);
+    CREATE INDEX IF NOT EXISTS idx_product_main_templates_visibility ON product_main_templates(visibility);
+  `);
+  console.log('已创建 product_main_templates 表');
+
+  // 4. 创建商品小模板表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_sub_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      main_template_id INTEGER NOT NULL REFERENCES product_main_templates(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      fixed_prompt TEXT NOT NULL,
+      fixed_reference_images TEXT DEFAULT '[]',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_sub_templates_main_id ON product_sub_templates(main_template_id);
+  `);
+  console.log('已创建 product_sub_templates 表');
+
+  // 5. 创建商品主图模板库图片表（用户上传的可点选参考图）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_library_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      name TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_library_images_user_id ON product_library_images(user_id);
+  `);
+  console.log('已创建 product_library_images 表');
+
+  console.log('商品主图生成功能相关表已创建');
 
   console.log('数据库迁移完成！');
 }

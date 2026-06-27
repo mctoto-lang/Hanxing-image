@@ -10,24 +10,52 @@ const INITIAL_VISIBLE_COUNT = 16
 const VISIBLE_STEP = 12
 const GRID_COLUMNS = 4
 
-function CardSkeleton({ compact = false }: { compact?: boolean }) {
+export function shouldShowBottomSkeletons({
+  visibleCount,
+  totalCards,
+}: {
+  visibleCount: number
+  totalCards: number
+}) {
+  return visibleCount < totalCards
+}
+
+export function getBottomSkeletonCount({
+  gridColumns,
+  shouldShow,
+}: {
+  gridColumns: number
+  shouldShow: boolean
+}) {
+  return shouldShow ? gridColumns : 0
+}
+
+export function getBottomSkeletonIndexes({
+  visibleCards,
+  skeletonCount,
+}: {
+  visibleCards: PromptCard[]
+  skeletonCount: number
+}) {
+  if (skeletonCount <= 0) return []
+
+  const lastVisibleCardIndex = visibleCards[visibleCards.length - 1]?.card_index ?? 0
+
+  return Array.from({ length: skeletonCount }, (_, index) => lastVisibleCardIndex + index + 1)
+}
+
+function CardSkeleton({ indexLabel }: { indexLabel?: number }) {
   return (
     <div
       className="relative rounded-2xl border border-border/60 bg-card/60 overflow-hidden"
       style={{ aspectRatio: '3/5' }}
     >
       <Skeleton className="absolute inset-0 rounded-2xl" />
-      <div className="absolute inset-x-0 top-0 p-3 flex items-center justify-between">
-        <Skeleton className="h-4 w-10 rounded-full bg-background/60" />
-        <Skeleton className="h-6 w-14 rounded-lg bg-background/60" />
-      </div>
-      <div className="absolute inset-x-0 bottom-0 p-3 space-y-2">
-        <Skeleton className="h-3 w-3/4 bg-background/60" />
-        <Skeleton className="h-3 w-1/2 bg-background/60" />
-      </div>
-      {compact && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <Skeleton className="h-10 w-10 rounded-full bg-background/60" />
+      {typeof indexLabel === 'number' && (
+        <div className="absolute bottom-2.5 left-2.5 flex gap-1">
+          <span className="animate-placeholder-breathe rounded-full bg-black/12 px-2 py-0.5 text-[10px] font-medium text-foreground/28 select-none">
+            #{indexLabel}
+          </span>
         </div>
       )}
     </div>
@@ -35,6 +63,7 @@ function CardSkeleton({ compact = false }: { compact?: boolean }) {
 }
 
 interface CardGridProps {
+  taskId: number | null
   cards: PromptCard[]
   cardImagesMap: Map<number, CardImage[]>
   batchMode: boolean
@@ -55,7 +84,32 @@ interface CardGridProps {
   batchGeneratingImageCardIds?: Set<number>
 }
 
+export function getNextVisibleCountOnDataChange({
+  previousVisibleCount,
+  nextCardsLength,
+  didTaskChange,
+}: {
+  previousVisibleCount: number
+  nextCardsLength: number
+  didTaskChange: boolean
+}) {
+  if (didTaskChange) {
+    return Math.min(INITIAL_VISIBLE_COUNT, nextCardsLength || INITIAL_VISIBLE_COUNT)
+  }
+
+  if (nextCardsLength <= 0) {
+    return INITIAL_VISIBLE_COUNT
+  }
+
+  if (nextCardsLength < previousVisibleCount) {
+    return nextCardsLength
+  }
+
+  return previousVisibleCount
+}
+
 export default memo(function WorkspaceCardGrid({
+  taskId,
   cards,
   cardImagesMap,
   batchMode,
@@ -77,10 +131,18 @@ export default memo(function WorkspaceCardGrid({
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT)
   const [skeletonCount, setSkeletonCount] = useState(GRID_COLUMNS)
+  const previousTaskIdRef = useRef<number | null>(taskId)
 
   useEffect(() => {
-    setVisibleCount(INITIAL_VISIBLE_COUNT)
-  }, [cards])
+    const didTaskChange = previousTaskIdRef.current !== taskId
+    previousTaskIdRef.current = taskId
+
+    setVisibleCount(prev => getNextVisibleCountOnDataChange({
+      previousVisibleCount: prev,
+      nextCardsLength: cards.length,
+      didTaskChange,
+    }))
+  }, [taskId, cards.length])
 
   useEffect(() => {
     const updateSkeletonCount = () => {
@@ -112,8 +174,18 @@ export default memo(function WorkspaceCardGrid({
 
   const hasMore = visibleCount < cards.length
   const visibleCards = useMemo(() => cards.slice(0, visibleCount), [cards, visibleCount])
-  const remainingCount = cards.length - visibleCount
-  const shouldShowLoadingSkeletons = hasMore && remainingCount <= VISIBLE_STEP
+  const shouldShowLoadingSkeletons = shouldShowBottomSkeletons({
+    visibleCount,
+    totalCards: cards.length,
+  })
+  const bottomSkeletonCount = getBottomSkeletonCount({
+    gridColumns: skeletonCount,
+    shouldShow: shouldShowLoadingSkeletons,
+  })
+  const bottomSkeletonIndexes = useMemo(() => getBottomSkeletonIndexes({
+    visibleCards,
+    skeletonCount: bottomSkeletonCount,
+  }), [visibleCards, bottomSkeletonCount])
 
   const loadMore = useCallback(() => {
     setVisibleCount(prev => Math.min(prev + VISIBLE_STEP, cards.length))
@@ -137,14 +209,6 @@ export default memo(function WorkspaceCardGrid({
 
   return (
     <>
-      {shouldShowLoadingSkeletons && visibleCount > INITIAL_VISIBLE_COUNT && (
-        <div className="px-5 pt-4 pb-1">
-          <div className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 py-2">
-            <Skeleton className="h-2.5 w-2.5 rounded-full" />
-            <Skeleton className="h-3 w-28" />
-          </div>
-        </div>
-      )}
       <div
         className="grid gap-5 p-5"
         style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)` }}
@@ -170,8 +234,8 @@ export default memo(function WorkspaceCardGrid({
             batchGeneratingImage={batchGeneratingImageCardIds.has(card.id)}
           />
         ))}
-        {shouldShowLoadingSkeletons && Array.from({ length: skeletonCount }).map((_, index) => (
-          <CardSkeleton key={`bottom-skeleton-${index}`} compact />
+        {bottomSkeletonIndexes.map((indexLabel, index) => (
+          <CardSkeleton key={`bottom-skeleton-${index}`} indexLabel={indexLabel} />
         ))}
         {/* 添加卡片按钮 */}
         <div
