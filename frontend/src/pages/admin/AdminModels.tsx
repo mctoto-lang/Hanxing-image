@@ -43,6 +43,7 @@ interface Model {
   is_active: boolean
   visible_in_generate: boolean
   visible_in_canvas: boolean
+  visible_in_workspace: boolean
   visible_in_product: boolean
   supports_reference_image: boolean
   max_reference_images: number
@@ -67,6 +68,7 @@ interface ModelForm {
   task_timeout: string
   visible_in_generate: boolean
   visible_in_canvas: boolean
+  visible_in_workspace: boolean
   visible_in_product: boolean
   supports_reference_image: boolean
   max_reference_images: string
@@ -107,7 +109,8 @@ const emptyForm: ModelForm = {
   task_timeout: '0',
   visible_in_generate: true,
   visible_in_canvas: true,
-  visible_in_product: true,
+  visible_in_workspace: true,
+  visible_in_product: false,
   supports_reference_image: false,
   max_reference_images: '1',
   reference_image_field: 'image_url',
@@ -174,9 +177,10 @@ export default function AdminModels() {
       max_retries: String(model.max_retries ?? 3),
       api_timeout: String(model.api_timeout ?? 120),
       task_timeout: String(model.task_timeout ?? 0),
-      visible_in_generate: model.visible_in_generate !== false,
-      visible_in_canvas: model.visible_in_canvas !== false,
-      visible_in_product: model.visible_in_product !== false,
+      visible_in_generate: model.visible_in_generate,
+      visible_in_canvas: model.visible_in_canvas,
+      visible_in_workspace: model.visible_in_workspace,
+      visible_in_product: model.visible_in_product,
       supports_reference_image: !!model.supports_reference_image,
       max_reference_images: String(model.max_reference_images || 1),
       reference_image_field: model.reference_image_field || 'image_url',
@@ -261,6 +265,7 @@ export default function AdminModels() {
         task_timeout: parseInt(form.task_timeout) || 0,
         visible_in_generate: form.visible_in_generate,
         visible_in_canvas: form.visible_in_canvas,
+        visible_in_workspace: form.visible_in_workspace,
         visible_in_product: form.visible_in_product,
         supports_reference_image: form.supports_reference_image,
         max_reference_images: parseInt(form.max_reference_images) || 1,
@@ -468,17 +473,22 @@ export default function AdminModels() {
       header: '可见性',
       cell: ({ row }) => (
         <div className="flex gap-1">
-          {row.original.visible_in_generate !== false && (
+          {row.original.visible_in_generate && (
             <Badge variant="outline" className="text-xs bg-blue-50 text-blue-600 border-blue-200">
               自由创作
             </Badge>
           )}
-          {row.original.visible_in_canvas !== false && (
+          {row.original.visible_in_canvas && (
             <Badge variant="outline" className="text-xs bg-green-50 text-green-600 border-green-200">
               项目创作
             </Badge>
           )}
-          {row.original.visible_in_product !== false && (
+          {row.original.visible_in_workspace && (
+            <Badge variant="outline" className="text-xs bg-violet-50 text-violet-600 border-violet-200">
+              批量生图
+            </Badge>
+          )}
+          {row.original.visible_in_product && (
             <Badge variant="outline" className="text-xs bg-orange-50 text-orange-600 border-orange-200">
               商品主图
             </Badge>
@@ -925,6 +935,13 @@ export default function AdminModels() {
                     onCheckedChange={(checked) => setForm({ ...form, visible_in_canvas: !!checked })}
                   />
                   <span className="text-sm">项目创作可见</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={form.visible_in_workspace}
+                    onCheckedChange={(checked) => setForm({ ...form, visible_in_workspace: !!checked })}
+                  />
+                  <span className="text-sm">批量生图可见</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <Checkbox

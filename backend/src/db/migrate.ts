@@ -188,6 +188,10 @@ export function migrate() {
     db.exec("ALTER TABLE models ADD COLUMN visible_in_canvas INTEGER NOT NULL DEFAULT 1");
     console.log('已添加 visible_in_canvas 字段到 models');
   }
+  if (!modelColNames.has('visible_in_workspace')) {
+    db.exec("ALTER TABLE models ADD COLUMN visible_in_workspace INTEGER NOT NULL DEFAULT 1");
+    console.log('已添加 visible_in_workspace 字段到 models');
+  }
   if (!modelColNames.has('supports_reference_image')) {
     db.exec("ALTER TABLE models ADD COLUMN supports_reference_image INTEGER NOT NULL DEFAULT 0");
     console.log('已添加 supports_reference_image 字段到 models');
@@ -265,6 +269,7 @@ export function migrate() {
           supported_sizes TEXT,
           visible_in_generate INTEGER NOT NULL DEFAULT 1,
           visible_in_canvas INTEGER NOT NULL DEFAULT 1,
+          visible_in_workspace INTEGER NOT NULL DEFAULT 1,
           supports_reference_image INTEGER NOT NULL DEFAULT 0,
           max_reference_images INTEGER NOT NULL DEFAULT 1,
           reference_image_field TEXT DEFAULT 'image_url',
@@ -278,7 +283,7 @@ export function migrate() {
       // 动态检测旧表和新表共有的列，确保数据不丢失
       const oldModelCols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
       const oldModelColNames = oldModelCols.map(c => c.name);
-      const allNewCols = ['id', 'name', 'display_name', 'api_endpoint', 'api_key_encrypted', 'cost_per_image', 'max_concurrent', 'max_retries', 'api_timeout', 'task_timeout', 'is_active', 'icon_url', 'supported_sizes', 'visible_in_generate', 'visible_in_canvas', 'supports_reference_image', 'max_reference_images', 'reference_image_field', 'api_format', 'extra_config', 'created_at', 'updated_at'];
+      const allNewCols = ['id', 'name', 'display_name', 'api_endpoint', 'api_key_encrypted', 'cost_per_image', 'max_concurrent', 'max_retries', 'api_timeout', 'task_timeout', 'is_active', 'icon_url', 'supported_sizes', 'visible_in_generate', 'visible_in_canvas', 'visible_in_workspace', 'supports_reference_image', 'max_reference_images', 'reference_image_field', 'api_format', 'extra_config', 'created_at', 'updated_at'];
       const commonCols = allNewCols.filter(c => oldModelColNames.includes(c));
       const colList = commonCols.join(', ');
       db.exec(`INSERT INTO models_new (${colList}) SELECT ${colList} FROM models`);

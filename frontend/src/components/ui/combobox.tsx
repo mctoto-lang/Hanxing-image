@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronsUpDown, Search } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
@@ -38,6 +38,8 @@ export function Combobox({
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const [contentWidth, setContentWidth] = useState<number | null>(null)
 
   const selected = options.find(option => option.value === value)
   const filteredOptions = useMemo(() => {
@@ -60,9 +62,23 @@ export function Combobox({
     setQuery('')
   }
 
+  useEffect(() => {
+    const updateWidth = () => {
+      setContentWidth(triggerRef.current?.offsetWidth || null)
+    }
+
+    updateWidth()
+
+    if (typeof window === 'undefined') return
+
+    window.addEventListener('resize', updateWidth)
+    return () => window.removeEventListener('resize', updateWidth)
+  }, [])
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         role="combobox"
@@ -86,7 +102,7 @@ export function Combobox({
         </div>
         <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
-      <PopoverContent className={cn('w-80 p-0 z-[70]', contentClassName)} align="start">
+      <PopoverContent className={cn('min-w-0 p-0 z-[70]', contentClassName)} align="start" style={{ width: contentWidth || undefined }}>
         <div className="border-b p-2">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

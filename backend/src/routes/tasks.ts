@@ -7,6 +7,34 @@ import { taskQueue } from '../services/queue.js';
 
 export const taskRouter = Router();
 
+function normalizeStaleProductTasks(tasks: any[]) {
+  const now = Date.now();
+  const staleThresholdMs = 30 * 60 * 1000;
+
+  return tasks.map((task) => {
+    if (task.source !== 'product') return task;
+    if (task.status !== 'queued' && task.status !== 'pending' && task.status !== 'processing') return task;
+
+    const createdAtMs = task.created_at ? new Date(task.created_at).getTime() : NaN;
+    const startedAtMs = task.started_at ? new Date(task.started_at).getTime() : NaN;
+    const baseTime = Number.isFinite(startedAtMs) ? startedAtMs : createdAtMs;
+    const ageMs = Number.isFinite(baseTime) ? now - baseTime : 0;
+    const hasResultImages = Array.isArray(task.result_images) && task.result_images.length > 0;
+    const hasErrorMessage = Boolean(task.error_message);
+
+    if (ageMs < staleThresholdMs || hasResultImages || hasErrorMessage) {
+      return task;
+    }
+
+    return {
+      ...task,
+      status: 'failed',
+      error_message: '任务状态异常：长时间未开始或未完成，已自动标记为失败',
+      completed_at: task.completed_at || new Date(now).toISOString(),
+    };
+  });
+}
+
 // 生图接口速率限制：每用户每分钟最多 10 次
 const generateLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -39,7 +67,10 @@ taskRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
     }
     const placeholders = ids.map(() => '?').join(',');
     const result = query(
-      `SELECT id, status, result_images, error_message, template_info FROM generation_tasks WHERE user_id = ? AND id IN (${placeholders})`,
+      `SELECT t.id, t.status, t.result_images, t.error_message, t.template_info, t.prompt, t.image_size, t.started_at, t.completed_at, t.created_at, m.display_name as model_name
+       FROM generation_tasks t
+       LEFT JOIN models m ON t.model_id = m.id
+       WHERE t.user_id = ? AND t.id IN (${placeholders})`,
       [req.userId, ...ids]
     );
     const tasks = result.rows.map((t: any) => ({
@@ -47,8 +78,15 @@ taskRouter.get('/', authMiddleware, async (req: AuthRequest, res) => {
       status: t.status,
       result_images: t.result_images ? JSON.parse(t.result_images) : [],
       error_message: t.error_message,
+      prompt: t.prompt,
+      model_name: t.model_name,
+      image_size: t.image_size,
+      started_at: t.started_at,
+      completed_at: t.completed_at,
+      created_at: t.created_at,
       template_info: t.template_info ? JSON.parse(t.template_info) : undefined,
     }));
+
     return res.json({ tasks });
   } catch {
     return res.status(500).json({ error: '查询任务状态失败' });
@@ -91,6 +129,13 @@ taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRe
     const model = modelResult.rows[0];
     if (!model) {
       return res.status(404).json({ error: '模型不存在或已禁用' });
+    }
+
+    if (creditsType === 'project' && !model.visible_in_canvas) {
+      return res.status(400).json({ error: '该模型不可用于项目创作' });
+    }
+    if (creditsType === 'creative' && !model.visible_in_generate) {
+      return res.status(400).json({ error: '该模型不可用于自由创作' });
     }
 
     const allowedModels = user.allowed_models || [];
@@ -196,7 +241,7 @@ taskRouter.get('/history', authMiddleware, async (req: AuthRequest, res) => {
     let whereClause = 'WHERE t.user_id = ?';
     const params: any[] = [req.userId];
 
-    if (source && (source === 'creative' || source === 'project')) {
+    if (source && (source === 'creative' || source === 'project' || source === 'product')) {
       whereClause += ' AND t.source = ?';
       params.push(source);
     }
@@ -208,16 +253,19 @@ taskRouter.get('/history', authMiddleware, async (req: AuthRequest, res) => {
        ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
+    const normalizedRows = normalizeStaleProductTasks(result.rows);
     const countResult = query(
       `SELECT COUNT(*) as count FROM generation_tasks t ${whereClause}`,
       params
     );
+
     return res.json({
-      tasks: result.rows,
+      tasks: normalizedRows,
       total: parseInt(countResult.rows[0].count),
       page,
       limit,
     });
+
   } catch {
     return res.status(500).json({ error: '获取历史记录失败' });
   }

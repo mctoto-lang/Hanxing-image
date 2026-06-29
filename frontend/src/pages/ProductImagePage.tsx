@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Upload, LayoutTemplate, FileText, Settings2, X, Loader2, AlertCircle, Image as ImageIcon, Package, FolderOpen, Sparkles, Trash2, ZoomIn, RotateCcw, Layers } from 'lucide-react'
+import { Loader2, Eye } from 'lucide-react'
+import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Delete02Icon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -7,10 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { Combobox } from '@/components/ui/combobox'
 import { apiFetch, safeResponseJson } from '@/lib/api'
-import { uploadReferenceImages } from '@/lib/product-reference-upload'
-import { cn } from '@/lib/utils'
+import { uploadReferenceImages, type ReferenceUploadProgress } from '@/lib/product-reference-upload'
+import { cn, toImageSrc } from '@/lib/utils'
 import { toast } from 'sonner'
+import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
 
 type GenerateMode = 'single' | 'template'
 
@@ -27,8 +31,8 @@ interface Model {
   cost_per_image: number
   supports_reference_image: boolean
   max_reference_images: number
-  icon_url?: string
-  supported_sizes?: { ratios: ModelSizeRatio[] } | null
+  icon_url: string | null
+  supported_sizes: { ratios: ModelSizeRatio[] } | null
 }
 
 interface MainTemplate {
@@ -64,7 +68,7 @@ interface LibraryImage {
 
 interface GenerationTask {
   id: number
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  status: 'pending' | 'processing' | 'queued' | 'completed' | 'failed'
   result_images?: string[]
   error_message?: string
   template_info?: {
@@ -72,6 +76,12 @@ interface GenerationTask {
     sub_template_name?: string
   }
   completedAt?: number
+  prompt?: string
+  model_name?: string
+  image_size?: string
+  started_at?: string | null
+  completed_at?: string | null
+  created_at?: string
 }
 
 interface HistoryImage {
@@ -79,6 +89,29 @@ interface HistoryImage {
   taskId: number
   subTemplateName?: string
   timestamp: number
+  prompt?: string
+  modelName?: string
+  imageSize?: string
+  startedAt?: string | null
+  completedAt?: string | null
+  createdAt?: string
+}
+
+interface HistoryTaskResponse {
+  id: number
+  status: 'pending' | 'processing' | 'queued' | 'completed' | 'failed'
+  result_images?: string[] | string | null
+  error_message?: string
+  prompt?: string | null
+  model_name?: string | null
+  image_size?: string | null
+  started_at?: string | null
+  template_info?: {
+    mode?: 'single' | 'template'
+    sub_template_name?: string
+  } | string | null
+  completed_at?: string | null
+  created_at?: string | null
 }
 
 interface CanvasImage {
@@ -111,16 +144,48 @@ function getArrayData<T>(data: unknown): T[] {
   return []
 }
 
-function formatRelativeTime(ts: number): string {
-  const diff = Date.now() - ts
-  const minutes = Math.floor(diff / 60000)
-  const hours = Math.floor(diff / 3600000)
-  const days = Math.floor(diff / 86400000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days === 1) return '昨天'
-  return `${days}天前`
+
+
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function parseTemplateInfo(value: HistoryTaskResponse['template_info']): GenerationTask['template_info'] {
+  if (!value) return undefined
+  const normalize = (input: { mode?: 'single' | 'template'; sub_template_name?: string }) => {
+    if (!input.mode) return undefined
+    return {
+      mode: input.mode,
+      sub_template_name: input.sub_template_name,
+    }
+  }
+  if (typeof value === 'string') {
+    try {
+      return normalize(JSON.parse(value))
+    } catch {
+      return undefined
+    }
+  }
+  return normalize(value)
+}
+
+function toTimestamp(value?: string | null) {
+  if (!value) return Date.now()
+  const parsed = new Date(value).getTime()
+  return Number.isFinite(parsed) ? parsed : Date.now()
 }
 
 export default function ProductImagePage() {
@@ -154,28 +219,54 @@ export default function ProductImagePage() {
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const [generating, setGenerating] = useState(false)
   const [uploadingReference, setUploadingReference] = useState(false)
+  const [referenceUploadProgress, setReferenceUploadProgress] = useState<ReferenceUploadProgress>({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
 
-  const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [selectedHistoryImages, setSelectedHistoryImages] = useState<Set<string>>(new Set())
   const [historyImages, setHistoryImages] = useState<HistoryImage[]>([])
   const prevImageCount = useRef(0)
+  const pollCleanupFns = useRef<Set<() => void>>(new Set())
 
   // 自由画布
   const [canvasImages, setCanvasImages] = useState<CanvasImage[]>([])
   const [canvasMode, setCanvasMode] = useState<CanvasMode>('single')
+  const [canvasZoom, setCanvasZoom] = useState(100)
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
   const canvasIdCounter = useRef(0)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
+  const [previewImageData, setPreviewImageData] = useState<{
+    prompt?: string
+    model_name?: string
+    image_size?: string
+    started_at?: string | null
+    completed_at?: string | null
+    created_at?: string
+  } | null>(null)
   const dragStateRef = useRef<{
-    type: 'drag' | 'zoom' | null
+    type: 'drag' | null
     id: string | null
     startClientX: number
     startClientY: number
     startImgX: number
     startImgY: number
+  }>({ type: null, id: null, startClientX: 0, startClientY: 0, startImgX: 0, startImgY: 0 })
+  const panStateRef = useRef<{
+    isPanning: boolean
+    startX: number
+    startY: number
+    startPanX: number
+    startPanY: number
+  }>({ isPanning: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 })
+  const scaleStateRef = useRef<{
+    isScaling: boolean
+    imageId: string | null
+    startClientX: number
+    startClientY: number
     startScale: number
-    centerCanvasX: number
-    centerCanvasY: number
-    startDist: number
-  }>({ type: null, id: null, startClientX: 0, startClientY: 0, startImgX: 0, startImgY: 0, startScale: 1, centerCanvasX: 0, centerCanvasY: 0, startDist: 0 })
+    centerX: number
+    centerY: number
+  }>({ isScaling: false, imageId: null, startClientX: 0, startClientY: 0, startScale: 1, centerX: 0, centerY: 0 })
 
   const selectedModel = models.find(m => m.id === selectedModelId)
   const isTemplateMode = mode === 'template'
@@ -183,6 +274,12 @@ export default function ProductImagePage() {
   const singleCost = (selectedModel?.cost_per_image || 0) * count
   const templateCost = (selectedModel?.cost_per_image || 0) * selectedSubTemplateIds.length
   const cost = isTemplateMode ? templateCost : singleCost
+  const modelOptions = useMemo(() => models.map(model => ({
+    value: String(model.id),
+    label: model.display_name || model.name,
+    description: model.name,
+    icon: model.icon_url ? toImageSrc(model.icon_url) : undefined,
+  })), [models])
 
   // 模型可用尺寸列表
   const availableSizes = useMemo(() => {
@@ -194,6 +291,11 @@ export default function ProductImagePage() {
       { ratio: '2:3', width: 1024, height: 1536 },
     ]
   }, [selectedModel])
+  const sizeOptions = useMemo(() => availableSizes.map((item) => ({
+    value: `${item.width}x${item.height}`,
+    label: `${item.ratio} (${item.width}×${item.height})`,
+    description: `${item.width}x${item.height}`,
+  })), [availableSizes])
 
   // 当前选择的尺寸是否仍在可用列表里；不在则用第一个
   useEffect(() => {
@@ -205,6 +307,45 @@ export default function ProductImagePage() {
   const activeCount = tasks.filter(t => t.status === 'pending' || t.status === 'processing').length
   const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'processing')
   const failedTasks = tasks.filter(t => t.status === 'failed')
+
+  // 生成记录：合并所有类型的记录（已完成、进行中、失败）
+  const allRecords = useMemo(() => {
+    const records: Array<{
+      type: 'completed' | 'pending' | 'failed'
+      data: HistoryImage | GenerationTask
+      timestamp: number
+    }> = []
+    
+    // 已完成的图片
+    historyImages.forEach(img => {
+      records.push({ type: 'completed', data: img, timestamp: img.timestamp })
+    })
+    
+    // 进行中的任务
+        pendingTasks.forEach(task => {
+          records.push({ type: 'pending', data: task, timestamp: task.completedAt || Date.now() })
+        })
+        
+        // 失败的任务
+        failedTasks.forEach(task => {
+          records.push({ type: 'failed', data: task, timestamp: task.completedAt || Date.now() })
+        })
+    
+    // 排序：进行中优先，然后按时间倒序（最新的在前）
+    return records.sort((a, b) => {
+      // 进行中的任务永远在最前面
+      if (a.type === 'pending' && b.type !== 'pending') return -1
+      if (a.type !== 'pending' && b.type === 'pending') return 1
+      // 其他任务按时间倒序
+      return b.timestamp - a.timestamp
+    })
+  }, [historyImages, pendingTasks, failedTasks])
+
+  // 记录分页
+  const [recordPage, setRecordPage] = useState(0)
+  const recordsPerPage = 10
+  const totalRecordPages = Math.ceil(allRecords.length / recordsPerPage)
+  const currentPageRecords = allRecords.slice(recordPage * recordsPerPage, (recordPage + 1) * recordsPerPage)
 
   useEffect(() => {
     const fetchModels = async () => {
@@ -229,6 +370,80 @@ export default function ProductImagePage() {
   useEffect(() => {
     const credits = localStorage.getItem('userCreativeCredits')
     if (credits) setUserCredits(parseInt(credits))
+
+  }, [])
+
+  useEffect(() => {
+    const fetchProductHistory = async () => {
+      try {
+        const res = await apiFetch('/api/tasks/history?limit=20&source=product')
+        if (!res.ok) return
+        const data = await safeResponseJson(res)
+        const taskList = Array.isArray(data.tasks) ? data.tasks as HistoryTaskResponse[] : []
+        const normalizedTasks: GenerationTask[] = taskList.map((task) => ({
+          id: task.id,
+          status: task.status,
+          result_images: parseJsonArray(task.result_images),
+          error_message: task.error_message,
+          prompt: task.prompt || undefined,
+          model_name: task.model_name || undefined,
+          image_size: task.image_size || undefined,
+          started_at: task.started_at || null,
+          completed_at: task.completed_at || null,
+          created_at: task.created_at || undefined,
+          template_info: parseTemplateInfo(task.template_info),
+          completedAt: toTimestamp(task.completed_at || task.created_at),
+        }))
+
+        const pendingTaskIds = normalizedTasks
+          .filter(task => task.status === 'pending' || task.status === 'processing' || task.status === 'queued')
+          .map(task => task.id)
+
+        if (pendingTaskIds.length === 0) {
+          setTasks(normalizedTasks)
+          return
+        }
+
+        const latestStatusRes = await apiFetch(`/api/tasks?ids=${pendingTaskIds.join(',')}`)
+        const latestStatusData = await safeResponseJson(latestStatusRes)
+        const latestTasks = Array.isArray(latestStatusData.tasks) ? latestStatusData.tasks as GenerationTask[] : []
+        const latestTaskMap = new Map(latestTasks.map(task => [task.id, task]))
+
+        const mergedTasks = normalizedTasks.map(task => {
+          const latestTask = latestTaskMap.get(task.id)
+          if (!latestTask) return task
+          return {
+            ...task,
+            ...latestTask,
+            completedAt: latestTask.status === 'completed'
+              ? (task.completedAt || Date.now())
+              : task.completedAt,
+          }
+        })
+
+        setTasks(mergedTasks)
+
+        const stillPendingTaskIds = mergedTasks
+          .filter(task => task.status === 'pending' || task.status === 'processing' || task.status === 'queued')
+          .map(task => task.id)
+
+        if (stillPendingTaskIds.length > 0) {
+          pollTasks(stillPendingTaskIds, { appendInitialTasks: false })
+        }
+      } catch {}
+    }
+
+    fetchProductHistory()
+
+    return () => {}
+  }, [])
+
+  // 组件卸载时清理所有轮询
+  useEffect(() => {
+    return () => {
+      pollCleanupFns.current.forEach(cleanup => cleanup())
+      pollCleanupFns.current.clear()
+    }
   }, [])
 
   useEffect(() => {
@@ -320,7 +535,11 @@ export default function ProductImagePage() {
             naturalHeight: nh,
           }]
         }
-        // multi 模式：轻微错位叠放
+        // multi 模式：检查是否已存在相同 URL 的图片
+        if (prev.some(img => img.url === url)) {
+          return prev  // 已存在，不重复添加
+        }
+        // 不存在，追加新图片（轻微错位叠放）
         const offset = prev.length * 24
         return [...prev, {
           id: `cv-${++canvasIdCounter.current}`,
@@ -339,39 +558,68 @@ export default function ProductImagePage() {
     img.src = url
   }, [canvasMode])
 
-  // 点击历史记录图片：加入画布
+  // 点击历史记录图片：切换选中状态，同步到画布
   const handleHistoryClick = useCallback((url: string) => {
-    setPreviewImage(url)
-    addImageToCanvas(url)
-  }, [addImageToCanvas])
-
-  // 重置画布视图：所有图片恢复到中心默认缩放
-  const handleResetCanvas = useCallback(() => {
-    const container = canvasContainerRef.current
-    const cw = container?.clientWidth || 600
-    const ch = container?.clientHeight || 400
-    setCanvasImages(prev => prev.map(img => {
-      const fitScale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight) * 0.6
-      const scale = Math.max(0.1, fitScale)
-      const displayW = img.naturalWidth * scale
-      const displayH = img.naturalHeight * scale
-      return {
-        ...img,
-        scale,
-        x: (cw - displayW) / 2,
-        y: (ch - displayH) / 2,
+    setSelectedHistoryImages(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(url)) {
+        // 取消选中：从 set 和画布中移除
+        newSet.delete(url)
+        setCanvasImages(prev => prev.filter(img => img.url !== url))
+      } else {
+        // 选中：加入 set 和画布
+        if (canvasMode === 'single') {
+          // 单图模式：清空之前的选中
+          newSet.clear()
+          newSet.add(url)
+          addImageToCanvas(url, 'single')
+        } else {
+          // 多图模式：追加
+          newSet.add(url)
+          addImageToCanvas(url, 'multi')
+        }
       }
-    }))
+      return newSet
+    })
+  }, [canvasMode, addImageToCanvas])
+
+  // 重置画布视图：清空画布、清空选中、重置缩放
+  const handleResetCanvas = useCallback(() => {
+    // 清空画布中的所有图片
+    setCanvasImages([])
+    // 清空选中状态
+    setSelectedHistoryImages(new Set())
+    // 重置视图比例为 100%
+    setCanvasZoom(100)
   }, [])
 
   // 从画布删除图片
   const handleCanvasDelete = useCallback((id: string) => {
-    setCanvasImages(prev => prev.filter(img => img.id !== id))
+    setCanvasImages(prev => {
+      const img = prev.find(i => i.id === id)
+      if (img) {
+        // 同时从选中状态中移除
+        setSelectedHistoryImages(prevSet => {
+          const newSet = new Set(prevSet)
+          newSet.delete(img.url)
+          return newSet
+        })
+      }
+      return prev.filter(i => i.id !== id)
+    })
   }, [])
 
   // 切换画布模式
   const handleCanvasModeToggle = useCallback(() => {
-    setCanvasMode(prev => prev === 'single' ? 'multi' : 'single')
+    setCanvasMode(prev => {
+      const newMode = prev === 'single' ? 'multi' : 'single'
+      // 切换到单图模式时，清空画布和选中状态
+      if (newMode === 'single') {
+        setCanvasImages([])
+        setSelectedHistoryImages(new Set())
+      }
+      return newMode
+    })
   }, [])
 
   // 画布图片拖动
@@ -388,39 +636,6 @@ export default function ProductImagePage() {
       startClientY: e.clientY,
       startImgX: img.x,
       startImgY: img.y,
-      startScale: img.scale,
-      centerCanvasX: 0,
-      centerCanvasY: 0,
-      startDist: 0,
-    }
-  }, [])
-
-  // 画布图片缩放（按住缩放图标拖动：远离中心放大，靠近中心缩小）
-  const handleZoomPointerDown = useCallback((e: React.PointerEvent, img: CanvasImage) => {
-    if (e.button !== 0) return
-    e.preventDefault()
-    e.stopPropagation()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-    const container = canvasContainerRef.current
-    const rect = container?.getBoundingClientRect()
-    const cLeft = rect?.left || 0
-    const cTop = rect?.top || 0
-    const centerCanvasX = img.x + (img.naturalWidth * img.scale) / 2
-    const centerCanvasY = img.y + (img.naturalHeight * img.scale) / 2
-    const pointerCanvasX = e.clientX - cLeft
-    const pointerCanvasY = e.clientY - cTop
-    const startDist = Math.hypot(pointerCanvasX - centerCanvasX, pointerCanvasY - centerCanvasY) || 1
-    dragStateRef.current = {
-      type: 'zoom',
-      id: img.id,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      startImgX: img.x,
-      startImgY: img.y,
-      startScale: img.scale,
-      centerCanvasX,
-      centerCanvasY,
-      startDist,
     }
   }, [])
 
@@ -433,23 +648,6 @@ export default function ProductImagePage() {
       setCanvasImages(prev => prev.map(im =>
         im.id === ds.id ? { ...im, x: ds.startImgX + dx, y: ds.startImgY + dy } : im
       ))
-    } else if (ds.type === 'zoom') {
-      const container = canvasContainerRef.current
-      const rect = container?.getBoundingClientRect()
-      const cLeft = rect?.left || 0
-      const cTop = rect?.top || 0
-      const pointerCanvasX = e.clientX - cLeft
-      const pointerCanvasY = e.clientY - cTop
-      const currentDist = Math.hypot(pointerCanvasX - ds.centerCanvasX, pointerCanvasY - ds.centerCanvasY) || 1
-      const ratio = currentDist / ds.startDist
-      let newScale = ds.startScale * ratio
-      newScale = Math.max(0.05, Math.min(5, newScale))
-      setCanvasImages(prev => prev.map(im => {
-        if (im.id !== ds.id) return im
-        const newX = ds.centerCanvasX - (im.naturalWidth * newScale) / 2
-        const newY = ds.centerCanvasY - (im.naturalHeight * newScale) / 2
-        return { ...im, scale: newScale, x: newX, y: newY }
-      }))
     }
   }, [])
 
@@ -461,6 +659,131 @@ export default function ProductImagePage() {
     dragStateRef.current = { ...ds, type: null, id: null }
   }, [])
 
+  // 画布滚轮缩放
+  const handleCanvasWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = -e.deltaY
+    const zoomStep = delta > 0 ? 10 : -10
+    setCanvasZoom(prev => {
+      const newZoom = Math.max(10, Math.min(500, prev + zoomStep))
+      const zoomRatio = newZoom / prev
+      
+      // 调整所有图片的缩放
+      setCanvasImages(prevImages => prevImages.map(img => {
+        const newScale = img.scale * zoomRatio
+        // 以画布中心为缩放中心
+        const container = canvasContainerRef.current
+        const cw = container?.clientWidth || 600
+        const ch = container?.clientHeight || 400
+        const centerX = cw / 2
+        const centerY = ch / 2
+        const imgCenterX = img.x + (img.naturalWidth * img.scale) / 2
+        const imgCenterY = img.y + (img.naturalHeight * img.scale) / 2
+        const offsetX = imgCenterX - centerX
+        const offsetY = imgCenterY - centerY
+        const newX = centerX + offsetX * zoomRatio - (img.naturalWidth * newScale) / 2
+        const newY = centerY + offsetY * zoomRatio - (img.naturalHeight * newScale) / 2
+        
+        return { ...img, scale: newScale, x: newX, y: newY }
+      }))
+      
+      return newZoom
+    })
+  }, [])
+
+  // 画布区域拖动
+  const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    const target = e.target as HTMLElement
+    // 只有点击画布本身（不是图片）才能拖动画布
+    if (target.closest('[data-canvas-image]')) return
+    
+    e.preventDefault()
+    panStateRef.current = {
+      isPanning: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startPanX: panOffset.x,
+      startPanY: panOffset.y,
+    }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }, [panOffset])
+
+  const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
+    if (panStateRef.current.isPanning) {
+      const dx = e.clientX - panStateRef.current.startX
+      const dy = e.clientY - panStateRef.current.startY
+      setPanOffset({
+        x: panStateRef.current.startPanX + dx,
+        y: panStateRef.current.startPanY + dy,
+      })
+    }
+  }, [])
+
+  const handleCanvasPointerUp = useCallback((e: React.PointerEvent) => {
+    if (panStateRef.current.isPanning) {
+      panStateRef.current.isPanning = false
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
+    }
+  }, [])
+
+  // 图片缩放拖动开始
+  const handleScalePointerDown = useCallback((e: React.PointerEvent, img: CanvasImage) => {
+    e.stopPropagation()
+    e.preventDefault()
+    
+    scaleStateRef.current = {
+      isScaling: true,
+      imageId: img.id,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startScale: img.scale,
+      centerX: 0, // 不再需要
+      centerY: 0, // 不再需要
+    }
+    
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    } catch {}
+  }, [])
+
+  // 图片缩放拖动中（垂直拖动）
+  const handleScalePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!scaleStateRef.current.isScaling || !scaleStateRef.current.imageId) return
+    
+    const { startClientY, startScale, imageId } = scaleStateRef.current
+    
+    // 计算垂直方向的移动距离（向上为负，向下为正）
+    const deltaY = e.clientY - startClientY
+    
+    // 向上拖动（deltaY < 0）放大，向下拖动（deltaY > 0）缩小
+    // 每移动 80px 改变 1 倍缩放
+    const scaleDelta = -deltaY / 80
+    const newScale = Math.max(0.1, Math.min(5, startScale + scaleDelta))
+    
+    setCanvasImages(prev => prev.map(img => 
+      img.id === imageId ? { ...img, scale: newScale } : img
+    ))
+  }, [])
+
+  // 图片缩放拖动结束
+  const handleScalePointerUp = useCallback((e: React.PointerEvent) => {
+    if (scaleStateRef.current.isScaling) {
+      scaleStateRef.current = {
+        isScaling: false,
+        imageId: null,
+        startClientX: 0,
+        startClientY: 0,
+        startScale: 1,
+        centerX: 0,
+        centerY: 0,
+      }
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+      } catch {}
+    }
+  }, [])
+
   useEffect(() => {
     const now = Date.now()
     const completed = tasks.filter(t => t.status === 'completed' && t.result_images && t.result_images.length > 0)
@@ -469,18 +792,41 @@ export default function ProductImagePage() {
         url,
         taskId: t.id,
         subTemplateName: t.template_info?.sub_template_name,
-        timestamp: t.completedAt || now
+        timestamp: t.completedAt || now,
+        prompt: t.prompt,
+        modelName: t.model_name,
+        imageSize: t.image_size,
+        startedAt: t.started_at,
+        completedAt: t.completed_at,
+        createdAt: t.created_at,
       }))
     )
     setHistoryImages(images)
     if (images.length > prevImageCount.current) {
       const newImg = images[images.length - 1]
-      setPreviewImage(newImg.url)
-      // 新生成的图片自动加入画布
+      // 新生成的图片自动选中并加入画布
+      setSelectedHistoryImages(prev => {
+        const newSet = new Set(prev)
+        if (canvasMode === 'single') {
+          newSet.clear()
+        }
+        newSet.add(newImg.url)
+        return newSet
+      })
       addImageToCanvas(newImg.url)
+      // 有新记录时跳转到第一页
+      setRecordPage(0)
     }
     prevImageCount.current = images.length
-  }, [tasks, addImageToCanvas])
+
+  }, [tasks, addImageToCanvas, canvasMode])
+
+  // 画布为空时自动重置视图比例为 100%
+  useEffect(() => {
+    if (canvasImages.length === 0) {
+      setCanvasZoom(100)
+    }
+  }, [canvasImages])
 
   // 模式切换：清空模板相关选择
   const handleModeChange = (newMode: GenerateMode) => {
@@ -501,14 +847,20 @@ export default function ProductImagePage() {
     }
 
     setUploadingReference(true)
+    setReferenceUploadProgress({ uploadedCount: 0, totalCount: Math.min(files.length, maxImages), percent: 0, currentFileName: '' })
     try {
-      const uploadedUrls = await uploadReferenceImages(Array.from(files).slice(0, maxImages))
+      const uploadedUrls = await uploadReferenceImages(Array.from(files).slice(0, maxImages), {
+        onProgress: (progress) => {
+          setReferenceUploadProgress(progress)
+        },
+      })
       setReferenceImages(prev => [...prev, ...uploadedUrls])
       toast.success(`已上传 ${uploadedUrls.length} 张参考图`)
     } catch (error: any) {
       toast.error(error.message || '参考图上传失败')
     } finally {
       setUploadingReference(false)
+      setReferenceUploadProgress({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
     }
   }
 
@@ -602,7 +954,7 @@ export default function ProductImagePage() {
         additional_prompt: prompt
       }, templateCost)
     } else {
-      if (!prompt.trim()) { toast.error('请输入提示词'); return }
+      if (!prompt.trim()) { toast.error('请输入文案'); return }
       await runGenerate('single', {
         reference_images: finalReferenceImages,
         prompt,
@@ -612,15 +964,19 @@ export default function ProductImagePage() {
     }
   }
 
-  const pollTasks = async (taskIds: number[]) => {
-    const initialTasks: GenerationTask[] = taskIds.map(id => ({ id, status: 'pending' }))
-    setTasks(prev => [...prev, ...initialTasks])
+  const pollTasks = async (taskIds: number[], options?: { appendInitialTasks?: boolean }) => {
+    if (options?.appendInitialTasks !== false) {
+      const initialTasks: GenerationTask[] = taskIds.map(id => ({ id, status: 'pending' }))
+      setTasks(prev => [...prev, ...initialTasks])
+    }
+
     const interval = setInterval(async () => {
       try {
         const res = await apiFetch(`/api/tasks?ids=${taskIds.join(',')}`)
         const data = await safeResponseJson(res)
         const tasksList: GenerationTask[] = Array.isArray(data.tasks) ? data.tasks as GenerationTask[] : []
         if (tasksList.length === 0) return
+
         setTasks(prev => {
           const updated = [...prev]
           tasksList.forEach((t: GenerationTask) => {
@@ -639,12 +995,28 @@ export default function ProductImagePage() {
         const allDone = tasksList.every((t: GenerationTask) =>
           t.status === 'completed' || t.status === 'failed'
         )
-        if (allDone) clearInterval(interval)
+        if (allDone) {
+          clearInterval(interval)
+          clearTimeout(timeout)
+          pollCleanupFns.current.delete(cleanup)
+        }
       } catch (error) {
         console.error('轮询任务状态失败:', error)
       }
     }, 2000)
-    setTimeout(() => clearInterval(interval), 300000)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      pollCleanupFns.current.delete(cleanup)
+    }, 300000)
+
+    // 返回清理函数
+    const cleanup = () => {
+      clearInterval(interval)
+      clearTimeout(timeout)
+    }
+
+    pollCleanupFns.current.add(cleanup)
+    return cleanup
   }
 
   const canGenerate = isTemplateMode
@@ -662,7 +1034,7 @@ export default function ProductImagePage() {
   if (models.length === 0) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 bg-background">
-        <Package className="h-10 w-10 text-muted-foreground/50" />
+        <HugeiconsIcon icon={CubeIcon} size={40} strokeWidth={1.5} className="text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">暂无可用的商品主图生成模型</p>
         <p className="text-xs text-muted-foreground/70">请联系管理员配置模型</p>
       </div>
@@ -696,7 +1068,7 @@ export default function ProductImagePage() {
               <DialogTrigger
                 render={
                   <Button variant="outline" size="sm">
-                    <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={FolderKanbanIcon} size={14} strokeWidth={1.7} className="mr-1.5" />
                     模板管理
                   </Button>
                 }
@@ -721,7 +1093,7 @@ export default function ProductImagePage() {
             <Card size="sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  <Upload className="h-4 w-4 text-muted-foreground" />
+                  <HugeiconsIcon icon={Upload04Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
                   上传产品图片
                 </CardTitle>
                 <p className="text-[11px] text-muted-foreground">支持 JPG / PNG / WEBP 格式</p>
@@ -736,7 +1108,7 @@ export default function ProductImagePage() {
                         onClick={() => handleRemoveImage(index)}
                         className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/70 text-background opacity-0 transition group-hover:opacity-100"
                       >
-                        <X className="h-3 w-3" />
+                        <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
                       </button>
                     </div>
                   ))}
@@ -746,10 +1118,10 @@ export default function ProductImagePage() {
                         {uploadingReference ? (
                           <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
                         ) : (
-                          <Upload className="h-3 w-3 text-muted-foreground" />
+                          <HugeiconsIcon icon={Upload04Icon} size={12} strokeWidth={1.7} className="text-muted-foreground" />
                         )}
                       </div>
-                      <span className="text-[10px] text-muted-foreground">{uploadingReference ? '上传中' : '上传图片'}</span>
+                      <span className="text-[10px] text-muted-foreground">{uploadingReference ? `${referenceUploadProgress.percent}%` : '上传图片'}</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -766,23 +1138,26 @@ export default function ProductImagePage() {
                     {referenceImages.length}/{selectedModel.max_reference_images} 张
                   </p>
                 )}
+                {uploadingReference && referenceUploadProgress.totalCount > 0 && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    正在上传 {referenceUploadProgress.uploadedCount}/{referenceUploadProgress.totalCount}
+                    {referenceUploadProgress.currentFileName ? ` · ${referenceUploadProgress.currentFileName}` : ''}
+                  </p>
+                )}
               </CardContent>
             </Card>
 
             {/* 2. 模板库（单张模式） / 选择主图模板（模板模式） */}
             <Card size="sm">
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2 text-sm">
-                    {isTemplateMode ? (
-                      <LayoutTemplate className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <LayoutTemplate className="h-4 w-4 text-muted-foreground" />
-                    )}
-                    {isTemplateMode ? '选择主图模板' : '模板库'}
-                  </CardTitle>
-                  <span className="text-[10px] text-muted-foreground">可选</span>
-                </div>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  {isTemplateMode ? (
+                    <HugeiconsIcon icon={Layers01Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
+                  ) : (
+                    <HugeiconsIcon icon={Layers01Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
+                  )}
+                  {isTemplateMode ? '选择主图模板' : '模板库'}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 {isTemplateMode ? (
@@ -866,7 +1241,7 @@ export default function ProductImagePage() {
                             className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 transition group-hover:opacity-100"
                             title="删除"
                           >
-                            <Trash2 className="h-3 w-3" />
+                            <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={2} />
                           </button>
                         </div>
                       ))}
@@ -879,7 +1254,7 @@ export default function ProductImagePage() {
                         ) : (
                           <>
                             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
-                              <Upload className="h-3 w-3 text-muted-foreground" />
+                              <HugeiconsIcon icon={Upload04Icon} size={12} strokeWidth={1.7} className="text-muted-foreground" />
                             </div>
                             <span className="text-[10px] text-muted-foreground">上传</span>
                           </>
@@ -906,24 +1281,22 @@ export default function ProductImagePage() {
             {/* 3. 输入文案 */}
             <Card size="sm">
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2 text-sm">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    输入文案
-                  </CardTitle>
-                  <span className="text-[10px] text-muted-foreground">可选</span>
-                </div>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <HugeiconsIcon icon={File02Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
+                  输入文案
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="relative">
                   <Textarea
                     value={prompt}
-                    onChange={(e) => setPrompt(e.target.value.slice(0, 100))}
+                    onChange={(e) => setPrompt(e.target.value.slice(0, 5000))}
                     placeholder={isTemplateMode ? '补充说明，如产品颜色、尺寸等...' : '描述商品卖点、场景、光线、构图等...'}
-                    rows={3}
-                    className="resize-none text-sm"
+                    rows={4}
+                    className="resize-none text-sm overflow-y-auto"
+                    style={{ maxHeight: '120px' }}
                   />
-                  <span className="absolute bottom-2 right-3 text-[10px] text-muted-foreground">{prompt.length}/100</span>
+                  <span className="absolute bottom-2 right-3 text-[10px] text-muted-foreground">{prompt.length}/5000</span>
                 </div>
               </CardContent>
             </Card>
@@ -932,7 +1305,7 @@ export default function ProductImagePage() {
             <Card size="sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  <Settings2 className="h-4 w-4 text-muted-foreground" />
+                  <HugeiconsIcon icon={Settings02Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
                   生成设置
                 </CardTitle>
               </CardHeader>
@@ -940,48 +1313,42 @@ export default function ProductImagePage() {
                 <div className="space-y-2.5">
                   <div className="flex items-center gap-3">
                     <Label className="w-16 shrink-0 text-xs text-muted-foreground">生图模型</Label>
-                    <Select value={String(selectedModelId)} onValueChange={(v) => setSelectedModelId(Number(v))}>
-                      <SelectTrigger className="flex-1 text-sm">
-                        <SelectValue placeholder="选择模型" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {models.map((model) => (
-                          <SelectItem key={model.id} value={String(model.id)}>
-                            {model.display_name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Combobox
+                      value={selectedModelId ? String(selectedModelId) : ''}
+                      onValueChange={(value) => setSelectedModelId(Number(value))}
+                      options={modelOptions}
+                      placeholder="选择图片模型"
+                      searchPlaceholder="搜索图片模型..."
+                      emptyText="暂无图片模型"
+                      className="flex-1"
+                    />
                   </div>
                   <div className="flex items-center gap-3">
                     <Label className="w-16 shrink-0 text-xs text-muted-foreground">生图尺寸</Label>
-                    <Select value={size} onValueChange={(val) => setSize(val || '1024x1024')}>
-                      <SelectTrigger className="flex-1 text-sm">
-                        <SelectValue placeholder="选择尺寸" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableSizes.map((s) => (
-                          <SelectItem key={`${s.width}x${s.height}`} value={`${s.width}x${s.height}`}>
-                            {s.width}×{s.height}{s.ratio ? ` (${s.ratio})` : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Combobox
+                      value={size}
+                      onValueChange={setSize}
+                      options={sizeOptions}
+                      placeholder={selectedModel ? '选择尺寸' : '请先选择图片模型'}
+                      searchPlaceholder="搜索尺寸..."
+                      emptyText="暂无尺寸"
+                      disabled={!selectedModel}
+                      className="flex-1"
+                    />
                   </div>
                   {!isTemplateMode && (
                     <div className="flex items-center gap-3">
                       <Label className="w-16 shrink-0 text-xs text-muted-foreground">生图数量</Label>
-                      <Select value={String(count)} onValueChange={(v) => setCount(Number(v))}>
-                        <SelectTrigger className="flex-1 text-sm">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="1">1 张</SelectItem>
-                          <SelectItem value="2">2 张</SelectItem>
-                          <SelectItem value="3">3 张</SelectItem>
-                          <SelectItem value="4">4 张</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={count}
+                        onChange={(e) => {
+                          const value = Math.max(1, parseInt(e.target.value) || 1)
+                          setCount(value)
+                        }}
+                        className="flex-1 text-sm"
+                      />
                     </div>
                   )}
                 </div>
@@ -994,7 +1361,7 @@ export default function ProductImagePage() {
                   {generating ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <Sparkles className="mr-2 h-4 w-4" />
+                    <HugeiconsIcon icon={StarsIcon} size={16} strokeWidth={1.7} className="mr-2" />
                   )}
                   {generating ? '生成中...' : '一键生成主图'}
                 </Button>
@@ -1022,7 +1389,7 @@ export default function ProductImagePage() {
                     onClick={handleCanvasModeToggle}
                     title={canvasMode === 'single' ? '当前：单图替换，点击切换为多图共存' : '当前：多图共存，点击切换为单图替换'}
                   >
-                    <Layers className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={Layers01Icon} size={14} strokeWidth={1.7} className="mr-1.5" />
                     {canvasMode === 'single' ? '单图' : '多图'}
                   </Button>
                   <Button
@@ -1031,7 +1398,7 @@ export default function ProductImagePage() {
                     onClick={handleResetCanvas}
                     disabled={canvasImages.length === 0}
                   >
-                    <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={Loading03Icon} size={14} strokeWidth={1.7} className="mr-1.5" />
                     重置视图
                   </Button>
                 </div>
@@ -1040,7 +1407,16 @@ export default function ProductImagePage() {
                 ref={canvasContainerRef}
                 className="relative flex-1 overflow-hidden bg-muted/30"
                 style={{ backgroundImage: 'radial-gradient(circle, hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '16px 16px' }}
+                onWheel={handleCanvasWheel}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={handleCanvasPointerUp}
+                onPointerCancel={handleCanvasPointerUp}
               >
+                {/* 缩放百分比指示器 */}
+                <div className="absolute right-3 top-3 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow-sm">
+                  {canvasZoom}%
+                </div>
                 {canvasImages.length === 0 ? (
                   (generating || pendingTasks.length > 0) ? (
                     <div className="absolute inset-0 flex items-center justify-center">
@@ -1056,7 +1432,7 @@ export default function ProductImagePage() {
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center">
                         <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-md bg-background shadow-sm">
-                          <ImageIcon className="h-7 w-7 text-muted-foreground/40" />
+                          <HugeiconsIcon icon={Image02Icon} size={28} strokeWidth={1.5} className="text-muted-foreground/40" />
                         </div>
                         <p className="text-sm font-medium text-muted-foreground">点击下方历史记录图片加入画布</p>
                         <p className="mt-1 text-xs text-muted-foreground">支持拖动、缩放、多图共存</p>
@@ -1067,13 +1443,16 @@ export default function ProductImagePage() {
                   canvasImages.map((img) => {
                     const displayW = img.naturalWidth * img.scale
                     const displayH = img.naturalHeight * img.scale
+                    const historyImg = historyImages.find(h => h.url === img.url)
+                    
                     return (
                       <div
                         key={img.id}
+                        data-canvas-image
                         className="group absolute touch-none select-none cursor-grab active:cursor-grabbing"
                         style={{
-                          left: img.x,
-                          top: img.y,
+                          left: img.x + panOffset.x,
+                          top: img.y + panOffset.y,
                           width: displayW,
                           height: displayH,
                         }}
@@ -1088,28 +1467,61 @@ export default function ProductImagePage() {
                           draggable={false}
                           className="pointer-events-none h-full w-full rounded-sm object-contain shadow-md"
                         />
-                        {/* 悬浮操作：缩放 + 删除 */}
+                        {/* 悬浮操作：右上角眼睛和关闭按钮 */}
                         <div className="absolute -right-2 -top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
                           <button
                             type="button"
-                            data-canvas-action="zoom"
-                            title="按住拖动缩放（向外放大，向内缩小）"
-                            className="flex h-6 w-6 cursor-ns-resize items-center justify-center rounded-full bg-foreground text-background shadow-sm hover:bg-foreground/90"
-                            onPointerDown={(e) => handleZoomPointerDown(e, img)}
-                            onPointerMove={handlePointerMove}
-                            onPointerUp={handlePointerUp}
-                            onPointerCancel={handlePointerUp}
+                            data-canvas-action="preview"
+                            title="查看详情"
+                            className="flex h-7 w-7 items-center justify-center rounded-full bg-foreground text-background shadow-sm hover:bg-foreground/90"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setPreviewImageUrl(img.url)
+                              setPreviewImageData(historyImg ? {
+                                prompt: historyImg.prompt,
+                                model_name: historyImg.modelName,
+                                image_size: historyImg.imageSize,
+                                started_at: historyImg.startedAt || null,
+                                completed_at: historyImg.completedAt || null,
+                                created_at: historyImg.createdAt,
+                              } : null)
+                              setPreviewOpen(true)
+                            }}
                           >
-                            <ZoomIn className="h-3.5 w-3.5" />
+                            <Eye className="h-4 w-4" />
                           </button>
                           <button
                             type="button"
-                            data-canvas-action="delete"
-                            title="从画布删除"
-                            className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90"
-                            onClick={(e) => { e.stopPropagation(); handleCanvasDelete(img.id) }}
+                            data-canvas-action="remove"
+                            title="移除"
+                            className="flex h-7 w-7 items-center justify-center rounded-full bg-foreground text-background shadow-sm hover:bg-foreground/90"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleCanvasDelete(img.id)
+                            }}
                           >
-                            <X className="h-3.5 w-3.5" />
+                            <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={2} />
+                          </button>
+                        </div>
+                        {/* 悬浮操作：右下角缩放按钮 */}
+                        <div className="absolute -right-2 -bottom-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            type="button"
+                            data-canvas-action="scale"
+                            title="按住上下拖动缩放（向上放大，向下缩小）"
+                            className="relative flex h-7 w-7 items-center justify-center rounded-full bg-foreground text-background shadow-sm hover:bg-foreground/90 cursor-ns-resize"
+                            onPointerDown={(e) => handleScalePointerDown(e, img)}
+                            onPointerMove={handleScalePointerMove}
+                            onPointerUp={handleScalePointerUp}
+                            onPointerCancel={handleScalePointerUp}
+                          >
+                            <HugeiconsIcon icon={ArrowUpDownIcon} size={14} strokeWidth={2} />
+                            {/* 缩放时显示百分比 */}
+                            {scaleStateRef.current.isScaling && scaleStateRef.current.imageId === img.id && (
+                              <div className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-0.5 text-xs font-medium text-background shadow-md">
+                                {Math.round(img.scale * 100)}%
+                              </div>
+                            )}
                           </button>
                         </div>
                       </div>
@@ -1124,89 +1536,111 @@ export default function ProductImagePage() {
               <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
                 <span className="text-sm font-semibold text-foreground">生成记录</span>
                 <span className="text-[11px] text-muted-foreground">
-                  {historyImages.length} 已完成 · {pendingTasks.length} 进行中 · {failedTasks.length} 失败
+                  {allRecords.length > 0 && `共 ${allRecords.length} 条`}
+                  {totalRecordPages > 1 && ` · 第 ${recordPage + 1}/${totalRecordPages} 页`}
                 </span>
               </div>
               <div className="flex-1 overflow-x-auto overflow-y-hidden p-3">
-                {historyImages.length === 0 && pendingTasks.length === 0 && failedTasks.length === 0 ? (
+                {allRecords.length === 0 ? (
                   <div className="flex h-full items-center justify-center">
                     <p className="text-xs text-muted-foreground">暂无生成记录</p>
                   </div>
                 ) : (
-                  <div className="flex gap-2.5">
-                    {historyImages.map((img, i) => (
+                  <div className="flex items-center gap-2.5">
+                    {/* 上一页按钮 */}
+                    {recordPage > 0 && (
                       <button
-                        key={`${img.taskId}-${i}`}
                         type="button"
-                        onClick={() => handleHistoryClick(img.url)}
-                        className={cn(
-                          'group relative shrink-0 overflow-hidden rounded-md border-2 transition',
-                          previewImage === img.url
-                            ? 'border-foreground'
-                            : 'border-transparent hover:border-border'
-                        )}
+                        onClick={() => setRecordPage(prev => prev - 1)}
+                        className="flex shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 transition hover:bg-muted hover:border-foreground/20"
                         style={{ width: '88px', height: '88px' }}
-                        title="点击加入画布"
+                        title="上一页"
                       >
-                        <img src={img.url} alt="" className="h-full w-full object-cover" />
-                        {previewImage === img.url && (
-                          <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground">
-                            <svg className="h-2.5 w-2.5 text-background" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                            </svg>
-                          </div>
-                        )}
+                        <HugeiconsIcon icon={ArrowRight01Icon} size={24} strokeWidth={1.7} style={{ transform: 'rotate(180deg)' }} className="text-muted-foreground" />
                       </button>
-                    ))}
-                    {pendingTasks.map(task => (
-                      <div
-                        key={`pending-${task.id}`}
-                        className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
+                    )}
+                    
+                    {/* 当前页的记录 */}
+                    {currentPageRecords.map((record, i) => {
+                      if (record.type === 'completed') {
+                        const img = record.data as HistoryImage
+                        return (
+                          <button
+                            key={`completed-${img.taskId}-${recordPage * recordsPerPage + i}`}
+                            type="button"
+                            onClick={() => handleHistoryClick(img.url)}
+                            className={cn(
+                              'group relative shrink-0 overflow-hidden rounded-md border-2 transition',
+                              selectedHistoryImages.has(img.url)
+                                ? 'border-foreground'
+                                : 'border-transparent hover:border-border'
+                            )}
+                            style={{ width: '88px', height: '88px' }}
+                            title="点击选中/取消"
+                          >
+                            <img src={img.url} alt="" className="h-full w-full object-cover" />
+                            {selectedHistoryImages.has(img.url) && (
+                              <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground">
+                                <svg className="h-2.5 w-2.5 text-background" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+                              </div>
+                            )}
+                          </button>
+                        )
+                      } else if (record.type === 'pending') {
+                        const task = record.data as GenerationTask
+                        return (
+                          <div
+                            key={`pending-${task.id}`}
+                            className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
+                            style={{ width: '88px', height: '88px' }}
+                            title="生成中..."
+                          >
+                            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                          </div>
+                        )
+                      } else {
+                        const task = record.data as GenerationTask
+                        return (
+                          <div
+                            key={`failed-${task.id}`}
+                            className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
+                            style={{ width: '88px', height: '88px' }}
+                            title={task.error_message || '生成失败'}
+                          >
+                            <HugeiconsIcon icon={AlertCircleIcon} size={20} strokeWidth={1.7} className="text-destructive/70" />
+                          </div>
+                        )
+                      }
+                    })}
+                    
+                    {/* 下一页按钮 */}
+                    {recordPage < totalRecordPages - 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setRecordPage(prev => prev + 1)}
+                        className="flex shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 transition hover:bg-muted hover:border-foreground/20"
                         style={{ width: '88px', height: '88px' }}
+                        title="下一页"
                       >
-                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                      </div>
-                    ))}
-                    {failedTasks.map(task => (
-                      <div
-                        key={`failed-${task.id}`}
-                        className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
-                        style={{ width: '88px', height: '88px' }}
-                        title={task.error_message || '生成失败'}
-                      >
-                        <AlertCircle className="h-5 w-5 text-destructive/70" />
-                      </div>
-                    ))}
+                        <HugeiconsIcon icon={ArrowRight01Icon} size={24} strokeWidth={1.7} className="text-muted-foreground" />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
-              {historyImages.length > 0 && (
-                <div className="border-t border-border px-4 py-1.5">
-                  <div className="flex gap-2.5 overflow-x-auto">
-                    {historyImages.map((img, i) => (
-                      <span
-                        key={`time-${img.taskId}-${i}`}
-                        className={cn(
-                          'shrink-0 text-center text-[10px]',
-                          previewImage === img.url ? 'w-[88px] font-medium text-foreground' : 'w-[88px] text-muted-foreground'
-                        )}
-                      >
-                        {formatRelativeTime(img.timestamp)}
-                      </span>
-                    ))}
-                    {pendingTasks.map((_, i) => (
-                      <span key={`pt-${i}`} className="w-[88px] shrink-0 text-center text-[10px] text-muted-foreground">生成中</span>
-                    ))}
-                    {failedTasks.map((_, i) => (
-                      <span key={`ft-${i}`} className="w-[88px] shrink-0 text-center text-[10px] text-destructive">失败</span>
-                    ))}
-                  </div>
-                </div>
-              )}
             </Card>
           </div>
         </div>
       </main>
+
+      <ImagePreviewOverlay
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        imageUrl={previewImageUrl}
+        item={previewImageData}
+      />
     </div>
   )
 }

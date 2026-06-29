@@ -31,6 +31,15 @@ import {
   SentIcon,
   SidebarLeftIcon,
   SidebarRightIcon,
+  Upload04Icon,
+  Delete02Icon,
+  ArrowRight01Icon,
+  Loading03Icon,
+  Search01Icon,
+  AlertCircleIcon,
+  Settings02Icon,
+  Resize01Icon,
+  ArrowUpDownIcon,
 } from "@hugeicons/core-free-icons"
 
 export {
@@ -65,6 +74,15 @@ export {
   SentIcon,
   SidebarLeftIcon,
   SidebarRightIcon,
+  Upload04Icon,
+  Delete02Icon,
+  ArrowRight01Icon,
+  Loading03Icon,
+  Search01Icon,
+  AlertCircleIcon,
+  Settings02Icon,
+  Resize01Icon,
+  ArrowUpDownIcon,
 }
 
 export type { IconSvgElement }

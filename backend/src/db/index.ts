@@ -16,6 +16,7 @@ db.pragma('foreign_keys = ON');
 
 const JSON_FIELDS = new Set(['result_images', 'supported_sizes', 'allowed_models', 'managed_models', 'allowed_pages', 'retry_errors', 'reference_images', 'request_params', 'response_body']);
 const TIME_FIELDS = new Set(['created_at', 'updated_at', 'started_at', 'completed_at', 'login_at']);
+const BOOLEAN_FIELDS = new Set(['is_active', 'visible_in_generate', 'visible_in_canvas', 'visible_in_workspace', 'visible_in_product', 'supports_reference_image']);
 
 function parseJsonFields(row: any): any {
   if (!row || typeof row !== 'object') return row;
@@ -24,6 +25,8 @@ function parseJsonFields(row: any): any {
     const val = row[key];
     if (JSON_FIELDS.has(key) && typeof val === 'string') {
       try { out[key] = JSON.parse(val); } catch { out[key] = val; }
+    } else if (BOOLEAN_FIELDS.has(key)) {
+      out[key] = Boolean(val);
     } else if (TIME_FIELDS.has(key) && typeof val === 'string' && val) {
       // 将SQLite的时间字符串转换为ISO格式，添加Z后缀表示UTC时间
       // 这样前端JavaScript的Date对象会正确解析为UTC时间

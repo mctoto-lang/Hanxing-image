@@ -651,6 +651,10 @@ export default function WorkspacePage() {
   // 清理轮询
   useEffect(() => {
     return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
       if (batchPollRef.current) {
         clearInterval(batchPollRef.current)
         batchPollRef.current = null
@@ -755,11 +759,6 @@ export default function WorkspacePage() {
     // 卡片图片状态变化时，防抖刷新任务列表以更新细分状态
     if (taskRefreshTimeoutRef.current) clearTimeout(taskRefreshTimeoutRef.current)
     taskRefreshTimeoutRef.current = setTimeout(() => fetchTasks(1), 500)
-  }
-
-  const handleCardDeleted = (cardId: number) => {
-    setCards(prev => prev.filter(c => c.id !== cardId))
-    setSelectedCardIds(prev => { const next = new Set(prev); next.delete(cardId); return next })
   }
 
   const handleAddCard = async (prompt: string) => {
@@ -1388,7 +1387,6 @@ export default function WorkspacePage() {
                   selectedSize={selectedSize}
                   onToggleSelect={toggleCardSelection}
                   onCardUpdated={handleCardUpdated}
-                  onCardDeleted={handleCardDeleted}
                   onAddCard={handleAddCard}
                   onCardGeneratingImage={handleCardGeneratingImage}
                   batchDeepeningCardIds={batchDeepeningCardIds}

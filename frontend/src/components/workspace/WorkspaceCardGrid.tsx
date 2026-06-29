@@ -75,7 +75,6 @@ interface CardGridProps {
   selectedSize: string | null
   onToggleSelect: (id: number) => void
   onCardUpdated: (card: PromptCard) => void
-  onCardDeleted: (id: number) => void
   onAddCard: (prompt: string) => void
   onCardGeneratingImage?: (id: number, generating: boolean) => void
   // 外部批量操作加载状态
@@ -121,7 +120,6 @@ export default memo(function WorkspaceCardGrid({
   selectedSize,
   onToggleSelect,
   onCardUpdated,
-  onCardDeleted,
   onAddCard,
   onCardGeneratingImage,
   batchDeepeningCardIds = EMPTY_SET,
@@ -227,7 +225,6 @@ export default memo(function WorkspaceCardGrid({
             selectedSize={selectedSize}
             onToggleSelect={onToggleSelect}
             onCardUpdated={onCardUpdated}
-            onCardDeleted={onCardDeleted}
             onCardGeneratingImage={onCardGeneratingImage}
             batchDeepening={batchDeepeningCardIds.has(card.id)}
             batchRegenerating={batchRegeneratingCardIds.has(card.id)}

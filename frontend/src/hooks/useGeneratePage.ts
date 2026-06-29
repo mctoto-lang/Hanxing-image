@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { apiFetch } from '@/lib/api'
+import { uploadReferenceImages } from '@/lib/product-reference-upload'
 import { toast } from 'sonner'
 
 export interface Model {
@@ -16,6 +17,13 @@ export interface Model {
 export interface QueueStatus {
   queued: number
   processing: number
+}
+
+export interface ReferenceUploadState {
+  uploadedCount: number
+  totalCount: number
+  percent: number
+  currentFileName: string
 }
 
 export interface HistoryItem {
@@ -104,6 +112,7 @@ export function useGeneratePage(options: UseGeneratePageOptions) {
   const [referenceImages, setReferenceImages] = useState<string[]>([])
   const [refDialogOpen, setRefDialogOpen] = useState(false)
   const [refUploading, setRefUploading] = useState(false)
+  const [refUploadState, setRefUploadState] = useState<ReferenceUploadState>({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
   const [refDragOver, setRefDragOver] = useState(false)
 
   const selectedModelData = useMemo(() => models.find((m) => String(m.id) === selectedModel), [models, selectedModel])
@@ -184,22 +193,20 @@ export function useGeneratePage(options: UseGeneratePageOptions) {
 
     const filesToUpload = Array.from(files).slice(0, remaining)
     setRefUploading(true)
+    setRefUploadState({ uploadedCount: 0, totalCount: filesToUpload.length, percent: 0, currentFileName: '' })
     try {
-      const uploadedUrls: string[] = []
-      for (const file of filesToUpload) {
-        const formData = new FormData()
-        formData.append('image', file)
-        const data = await apiFetch('/api/upload/reference-image', {
-          method: 'POST',
-          body: formData,
-        }).then(r => r.json())
-        if (data.url) {
-          uploadedUrls.push(data.url)
-        }
-      }
+      const uploadedUrls = await uploadReferenceImages(filesToUpload, {
+        onProgress: (progress) => {
+          setRefUploadState(progress)
+        },
+      })
       setReferenceImages(prev => [...prev, ...uploadedUrls])
-    } catch {} finally {
+      toast.success(`已上传 ${uploadedUrls.length} 张参考图`)
+    } catch (error: any) {
+      toast.error(error?.message || '参考图上传失败')
+    } finally {
       setRefUploading(false)
+      setRefUploadState({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
     }
   }, [selectedModelData, referenceImages.length])
 
@@ -340,7 +347,7 @@ export function useGeneratePage(options: UseGeneratePageOptions) {
     // Reference images
     referenceImages, setReferenceImages,
     refDialogOpen, setRefDialogOpen,
-    refUploading, refDragOver, setRefDragOver,
+    refUploading, refUploadState, refDragOver, setRefDragOver,
     // Computed
     totalCost, isError, isWarning,
     selectedTask, sortedHistory,

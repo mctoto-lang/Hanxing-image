@@ -114,7 +114,7 @@ export default function WorkspaceGenerationConfigDialog({
         apiFetch('/api/admin/workspace/templates?type=fission'),
         apiFetch('/api/admin/workspace/templates?type=deepen'),
         apiFetch('/api/admin/workspace/templates?type=regenerate'),
-        apiFetch('/api/models?source=generate'),
+        apiFetch('/api/models?source=workspace'),
       ])
       const [fissionData, refineData, regenData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), modelsRes.json()])
       setFissionTemplates(fissionData.templates || [])
@@ -141,12 +141,12 @@ export default function WorkspaceGenerationConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-3xl">
         <DialogHeader><DialogTitle>生成配置</DialogTitle></DialogHeader>
         {loading ? (
           <div className="flex items-center justify-center py-10"><Spinner /></div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 py-2">
+          <div className="grid grid-cols-2 gap-4 py-2">
             <div className="space-y-1.5">
               <Label>裂变模板</Label>
               <Combobox
@@ -156,6 +156,8 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择裂变模板"
                 searchPlaceholder="搜索裂变模板..."
                 emptyText="暂无裂变模板"
+                className="h-10"
+                contentClassName="min-w-[360px]"
               />
             </div>
             <div className="space-y-1.5">
@@ -167,6 +169,8 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择细化模板"
                 searchPlaceholder="搜索细化模板..."
                 emptyText="暂无细化模板"
+                className="h-10"
+                contentClassName="min-w-[360px]"
               />
             </div>
             <div className="space-y-1.5">
@@ -178,6 +182,8 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择重新生成模板"
                 searchPlaceholder="搜索重新生成模板..."
                 emptyText="暂无重新生成模板"
+                className="h-10"
+                contentClassName="min-w-[360px]"
               />
             </div>
             <div className="space-y-1.5">
@@ -189,6 +195,8 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择图片模型"
                 searchPlaceholder="搜索图片模型..."
                 emptyText="暂无图片模型"
+                className="h-10"
+                contentClassName="min-w-[360px]"
               />
             </div>
             <div className="space-y-1.5">
@@ -201,6 +209,8 @@ export default function WorkspaceGenerationConfigDialog({
                 searchPlaceholder="搜索尺寸..."
                 emptyText="暂无尺寸"
                 disabled={!selectedModel}
+                className="h-10"
+                contentClassName="min-w-[360px]"
               />
             </div>
           </div>

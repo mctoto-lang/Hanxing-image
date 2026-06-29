@@ -173,7 +173,7 @@ function SizePopover({ imageSize, onSelect, disabled, width, height, onWidthChan
   )
 }
 
-function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUpload, onRemove, uploading, dragOver, onDragOver, onDragLeave, onDrop }: {
+function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUpload, onRemove, uploading, uploadPercent, uploadText, dragOver, onDragOver, onDragLeave, onDrop }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   referenceImages: string[]
@@ -181,6 +181,8 @@ function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUploa
   onUpload: (files: FileList) => void
   onRemove: (idx: number) => void
   uploading: boolean
+  uploadPercent?: number
+  uploadText?: string
   dragOver: boolean
   onDragOver: (e: React.DragEvent) => void
   onDragLeave: (e: React.DragEvent) => void
@@ -233,6 +235,9 @@ function RefImageDialog({ open, onOpenChange, referenceImages, maxCount, onUploa
               <div className="text-center">
                 <p className="text-sm font-medium">拖拽图片到此处或点击上传</p>
                 <p className="text-xs text-muted-foreground mt-1">还可上传 {remaining} 张，支持 PNG/JPG/WebP/GIF</p>
+                {uploading && (
+                  <p className="text-xs text-muted-foreground mt-2">{uploadText || `上传中 ${uploadPercent || 0}%`}</p>
+                )}
               </div>
               <input
                 ref={fileRef}
@@ -484,7 +489,7 @@ export default function GeneratePage() {
     pinnedIds, handlePin,
     referenceImages, setReferenceImages,
     refDialogOpen, setRefDialogOpen,
-    refUploading, refDragOver, setRefDragOver,
+    refUploading, refUploadState, refDragOver, setRefDragOver,
     totalCost, isError, isWarning,
     selectedTask, sortedHistory,
     handleRetry, openErrorDialog, openImagePreview,
@@ -732,6 +737,8 @@ export default function GeneratePage() {
         onUpload={(files) => handleRefUpload(files)}
         onRemove={(idx) => setReferenceImages(prev => prev.filter((_, i) => i !== idx))}
         uploading={refUploading}
+        uploadPercent={refUploadState.percent}
+        uploadText={refUploadState.totalCount > 0 ? `正在上传 ${refUploadState.uploadedCount}/${refUploadState.totalCount}${refUploadState.currentFileName ? ` · ${refUploadState.currentFileName}` : ''}` : undefined}
         dragOver={refDragOver}
         onDragOver={(e) => { e.preventDefault(); setRefDragOver(true) }}
         onDragLeave={() => setRefDragOver(false)}

@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import dns from 'dns/promises'
 import { authMiddleware, AuthRequest } from '../middleware/auth.js'
+import { query } from '../db/index.js'
 
 const router = Router()
 
@@ -14,6 +15,43 @@ const ALLOWED_PROXY_DOMAINS = [
   '.amazonaws.com',      // AWS S3
   '.cloudfront.net',     // CloudFront CDN
 ]
+
+function getConfiguredStorageHostnames(): Set<string> {
+  const hostnames = new Set<string>()
+  const result = query('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)', ['cos_base_url', 'cos_bucket', 'cos_region'])
+  const settings = Object.fromEntries(result.rows.map((row) => [String(row.key), String(row.value || '')]))
+  const baseUrl = settings.cos_base_url?.trim()
+  const bucket = settings.cos_bucket?.trim()
+  const region = settings.cos_region?.trim()
+
+  if (baseUrl) {
+    try {
+      hostnames.add(new URL(baseUrl).hostname.toLowerCase())
+    } catch {
+      const normalized = baseUrl.replace(/^https?:\/\//, '').split('/')[0]?.trim().toLowerCase()
+      if (normalized) hostnames.add(normalized)
+    }
+  }
+
+  if (bucket && region) {
+    hostnames.add(`${bucket}.cos.${region}.myqcloud.com`.toLowerCase())
+  }
+
+  if (process.env.COS_BASE_URL) {
+    try {
+      hostnames.add(new URL(process.env.COS_BASE_URL).hostname.toLowerCase())
+    } catch {
+      const normalized = process.env.COS_BASE_URL.replace(/^https?:\/\//, '').split('/')[0]?.trim().toLowerCase()
+      if (normalized) hostnames.add(normalized)
+    }
+  }
+
+  if (process.env.COS_BUCKET && process.env.COS_REGION) {
+    hostnames.add(`${process.env.COS_BUCKET}.cos.${process.env.COS_REGION}.myqcloud.com`.toLowerCase())
+  }
+
+  return hostnames
+}
 
 // 内网 IP 段（禁止代理访问）
 const PRIVATE_IP_RANGES = [
@@ -48,6 +86,10 @@ function isDomainAllowed(hostname: string): boolean {
   return ALLOWED_PROXY_DOMAINS.some((d) => lower.endsWith(d) || lower.includes(d))
 }
 
+function isConfiguredStorageHostname(hostname: string): boolean {
+  return getConfiguredStorageHostnames().has(hostname.toLowerCase())
+}
+
 /**
  * 检查远程 URL 是否安全（域名白名单 + DNS 解析防内网）
  */
@@ -65,6 +107,7 @@ async function isRemoteUrlSafe(url: string): Promise<{ safe: boolean; reason?: s
   }
 
   const hostname = parsed.hostname
+  const isConfiguredStorageHost = isConfiguredStorageHostname(hostname)
 
   // 域名白名单校验
   if (!isDomainAllowed(hostname)) {
@@ -75,7 +118,7 @@ async function isRemoteUrlSafe(url: string): Promise<{ safe: boolean; reason?: s
   try {
     const addresses = await dns.resolve4(hostname)
     for (const addr of addresses) {
-      if (isPrivateIP(addr)) {
+      if (isPrivateIP(addr) && !isConfiguredStorageHost) {
         return { safe: false, reason: '解析到内网 IP，禁止访问' }
       }
     }
@@ -84,7 +127,7 @@ async function isRemoteUrlSafe(url: string): Promise<{ safe: boolean; reason?: s
     try {
       const v6Addresses = await dns.resolve6(hostname)
       for (const addr of v6Addresses) {
-        if (addr === '::1' || addr === '::' || addr.startsWith('fc') || addr.startsWith('fd') || addr.startsWith('fe80')) {
+        if ((addr === '::1' || addr === '::' || addr.startsWith('fc') || addr.startsWith('fd') || addr.startsWith('fe80')) && !isConfiguredStorageHost) {
           return { safe: false, reason: '解析到内网 IPv6 地址，禁止访问' }
         }
       }

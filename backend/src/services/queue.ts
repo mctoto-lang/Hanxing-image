@@ -16,7 +16,7 @@ interface Task {
   source: string;
   task_type?: string;
   retry_count: number;
-  reference_images?: string;
+  reference_images?: string | string[];
   started_at?: string;
 }
 
@@ -40,7 +40,6 @@ const DEFAULT_API_TIMEOUT_MS = 120000;
 const MJ_POLL_INTERVAL_MS = 5000;  // Midjourney 轮询间隔
 const MJ_MAX_POLL_TIME_MS = 300000; // Midjourney 最大轮询时间 5分钟
 const STALE_TASK_SCAN_INTERVAL_MS = 30000;
-
 // 尺寸转换：将 "1024x1024" 格式转换为比例格式
 function sizeToRatio(size: string): string {
   const match = size.match(/^(\d+)x(\d+)$/i);
@@ -380,6 +379,7 @@ class TaskQueue {
         throw new Error('模型API未配置');
       }
 
+      await this.normalizeTaskReferenceImages(task);
       const imageUrls = await this.callImageAPI(model, task, taskTimeoutMs);
       const elapsed = Date.now() - startTime;
 
@@ -567,15 +567,89 @@ class TaskQueue {
     }
   }
 
+  private getReferenceImages(task: Task): string[] {
+    if (!task.reference_images) return [];
+    if (Array.isArray(task.reference_images)) {
+      return task.reference_images.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    }
+    try {
+      const parsed = JSON.parse(task.reference_images);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      }
+      return [];
+    } catch {
+      return typeof task.reference_images === 'string' && task.reference_images.trim().length > 0 ? [task.reference_images] : [];
+    }
+  }
+
+  private isDataUrl(value: string): boolean {
+    return /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(value);
+  }
+
+  private isRemoteUrl(value: string): boolean {
+    return /^https?:\/\//i.test(value);
+  }
+
+  private isLikelyBase64(value: string): boolean {
+    if (!value || value.length < 128 || value.length % 4 !== 0) return false;
+    return /^[A-Za-z0-9+/=\s]+$/.test(value);
+  }
+
+  private getExtensionFromMime(mimeType: string): string {
+    const normalized = mimeType.toLowerCase();
+    if (normalized.includes('jpeg')) return 'jpg';
+    if (normalized.includes('png')) return 'png';
+    if (normalized.includes('webp')) return 'webp';
+    if (normalized.includes('gif')) return 'gif';
+    return 'png';
+  }
+
+  private async normalizeReferenceImageToUrl(value: string, taskId: number, index: number): Promise<string> {
+    if (!value) return value;
+    if (this.isRemoteUrl(value) || value.startsWith('/uploads/')) {
+      return value;
+    }
+
+    if (this.isDataUrl(value)) {
+      const [, mimeType, base64] = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/) || [];
+      if (!base64) {
+        throw new Error('参考图 data URL 格式无效');
+      }
+      const ext = this.getExtensionFromMime(mimeType || 'image/png');
+      const filename = generateFilename(taskId, index, ext);
+      return await uploadImage(Buffer.from(base64, 'base64'), filename);
+    }
+
+    if (this.isLikelyBase64(value)) {
+      const filename = generateFilename(taskId, index);
+      return await uploadImage(Buffer.from(value.replace(/\s+/g, ''), 'base64'), filename);
+    }
+
+    return value;
+  }
+
+  private async normalizeTaskReferenceImages(task: Task): Promise<void> {
+    const referenceImages = this.getReferenceImages(task);
+    if (referenceImages.length === 0) {
+      task.reference_images = JSON.stringify([]);
+      return;
+    }
+
+    const normalized = await Promise.all(
+      referenceImages.map((value, index) => this.normalizeReferenceImageToUrl(value, task.id, index))
+    );
+
+    const serialized = JSON.stringify(normalized);
+    task.reference_images = serialized;
+    query('UPDATE generation_tasks SET reference_images = ? WHERE id = ?', [serialized, task.id]);
+  }
+
   // OpenAI GPT Image 格式
   private async callOpenAIAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
-    const hasReferenceImages = !!task.reference_images && (() => {
-      try {
-        const refs = JSON.parse(task.reference_images);
-        return Array.isArray(refs) && refs.length > 0;
-      } catch { return false; }
-    })();
+    const taskReferenceImages = this.getReferenceImages(task);
+    const hasReferenceImages = taskReferenceImages.length > 0;
     const endpoint = this.resolveEndpoint(model.api_endpoint, hasReferenceImages);
 
     for (let i = 0; i < task.image_count; i++) {
@@ -598,19 +672,19 @@ class TaskQueue {
         requestBody.quality = extraConfig.quality;
       }
 
-      // 添加参考图
-      if (task.reference_images) {
-        try {
-          const refImages = JSON.parse(task.reference_images);
-          if (Array.isArray(refImages) && refImages.length > 0) {
-            const fieldName = model.reference_image_field || 'image_url';
-            requestBody[fieldName] = refImages.length === 1 ? refImages[0] : refImages;
-            console.log(`[OpenAI] 参考图: ${fieldName}=${JSON.stringify(refImages)}`);
-          }
-        } catch {}
+      // 准备参考图文件上传
+      let imageFiles: { fieldName: string; urls: string[] } | undefined;
+      if (taskReferenceImages.length > 0) {
+        // OpenAI 图像编辑 API 的标准字段名是 "image"，不是 "url" 或 "image_url"
+        const fieldName = 'image';
+        imageFiles = { fieldName, urls: taskReferenceImages };
+        console.log(`[OpenAI] 参考图: ${fieldName}=${JSON.stringify(taskReferenceImages)}`);
+        // 注意：不要将 URL 添加到 requestBody，而是通过 imageFiles 参数传递
       }
 
-      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
+      // 有参考图时使用 multipart/form-data 格式
+      const useMultipart = taskReferenceImages.length > 0;
+      const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs, useMultipart, imageFiles);
       clearTimeout(timeoutId);
 
       const data = await this.parseResponse(response, endpoint);
@@ -624,6 +698,7 @@ class TaskQueue {
   // Gemini Nano Banana 简化格式
   private async callGeminiAPI(model: any, task: Task, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
+    const taskReferenceImages = this.getReferenceImages(task);
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
     // Gemini 简化格式端点通常是 /v1/images/generate
@@ -653,14 +728,9 @@ class TaskQueue {
       };
 
       // 添加参考图（Gemini 格式）
-      if (task.reference_images) {
-        try {
-          const refImages = JSON.parse(task.reference_images);
-          if (Array.isArray(refImages) && refImages.length > 0) {
-            requestBody.reference_images = refImages;
-            console.log(`[Gemini] 参考图: ${JSON.stringify(refImages)}`);
-          }
-        } catch {}
+      if (taskReferenceImages.length > 0) {
+        requestBody.reference_images = taskReferenceImages;
+        console.log(`[Gemini] 参考图: ${JSON.stringify(taskReferenceImages)}`);
       }
 
       const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
@@ -691,6 +761,7 @@ class TaskQueue {
   // Midjourney 格式（异步 + 轮询）
   private async callMidjourneyAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
+    const taskReferenceImages = this.getReferenceImages(task);
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
     // Midjourney 提交端点通常是 /mj/submit/imagine 或 /midjourney/imagine
@@ -728,14 +799,9 @@ class TaskQueue {
       };
 
       // 添加参考图（Midjourney 格式：base64Array）
-      if (task.reference_images) {
-        try {
-          const refImages = JSON.parse(task.reference_images);
-          if (Array.isArray(refImages) && refImages.length > 0) {
-            requestBody.base64Array = refImages;
-            console.log(`[MJ] 参考图: ${refImages.length} 张`);
-          }
-        } catch {}
+      if (taskReferenceImages.length > 0) {
+        requestBody.base64Array = taskReferenceImages;
+        console.log(`[MJ] 参考图: ${taskReferenceImages.length} 张`);
       }
 
       const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
@@ -840,6 +906,7 @@ class TaskQueue {
   // GRS 中转站统一格式（nano-banana / gpt-image-2 等）
   private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
+    const taskReferenceImages = this.getReferenceImages(task);
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
     // GRS 端点通常是 /v1/api/generate
@@ -877,14 +944,9 @@ class TaskQueue {
       }
 
       // 添加参考图
-      if (task.reference_images) {
-        try {
-          const refImages = JSON.parse(task.reference_images);
-          if (Array.isArray(refImages) && refImages.length > 0) {
-            requestBody.images = refImages;
-            console.log(`[GRS] 参考图: ${refImages.length} 张`);
-          }
-        } catch {}
+      if (taskReferenceImages.length > 0) {
+        requestBody.images = taskReferenceImages;
+        console.log(`[GRS] 参考图: ${taskReferenceImages.length} 张`);
       }
 
       const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
@@ -1005,6 +1067,7 @@ class TaskQueue {
   // 云雾 Midjourney 格式
   private async callYunwuMJAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
+    const taskReferenceImages = this.getReferenceImages(task);
     let submitEndpoint = model.api_endpoint.replace(/\/+$/, '');
 
     // 云雾 MJ 提交端点: /mj/submit/imagine
@@ -1045,14 +1108,9 @@ class TaskQueue {
       };
 
       // 添加参考图（云雾MJ: base64Array）
-      if (task.reference_images) {
-        try {
-          const refImages = JSON.parse(task.reference_images);
-          if (Array.isArray(refImages) && refImages.length > 0) {
-            requestBody.base64Array = refImages;
-            console.log(`[云雾MJ] 参考图: ${refImages.length} 张`);
-          }
-        } catch {}
+      if (taskReferenceImages.length > 0) {
+        requestBody.base64Array = taskReferenceImages;
+        console.log(`[云雾MJ] 参考图: ${taskReferenceImages.length} 张`);
       }
 
       const response = await this.fetchWithAuth(submitEndpoint, apiKey, requestBody, controller, effectiveTimeoutMs);
@@ -1166,25 +1224,95 @@ class TaskQueue {
     apiKey: string,
     body: Record<string, unknown>,
     controller: AbortController,
-    timeoutMs?: number
+    timeoutMs?: number,
+    useMultipart: boolean = false,
+    imageFiles?: { fieldName: string; urls: string[] }
   ): Promise<Response> {
     try {
+      let requestBody: string | FormData;
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${apiKey}`,
+      };
+
+      if (useMultipart) {
+        // 使用 multipart/form-data 格式
+        const formData = new FormData();
+        
+        // 先处理图片文件（如果有）
+        if (imageFiles && imageFiles.urls.length > 0) {
+          console.log(`[fetchWithAuth] 准备上传 ${imageFiles.urls.length} 张图片，字段名: ${imageFiles.fieldName}`);
+          for (let i = 0; i < imageFiles.urls.length; i++) {
+            const imageUrl = imageFiles.urls[i];
+            try {
+              console.log(`[fetchWithAuth] 下载参考图 ${i + 1}/${imageFiles.urls.length}: ${imageUrl}`);
+              // 下载图片
+              const imageResponse = await fetch(imageUrl);
+              if (!imageResponse.ok) {
+                throw new Error(`下载参考图失败: ${imageUrl}`);
+              }
+              const imageBuffer = await imageResponse.arrayBuffer();
+              const contentType = imageResponse.headers.get('content-type') || 'image/png';
+              const blob = new Blob([imageBuffer], { type: contentType });
+              
+              // 从 URL 提取文件名和扩展名
+              const urlPath = new URL(imageUrl).pathname;
+              const fileName = urlPath.split('/').pop() || 'image.png';
+              
+              console.log(`[fetchWithAuth] 图片 ${i + 1} 下载成功: ${fileName}, 大小: ${blob.size} bytes, 类型: ${contentType}`);
+              
+              // 添加到 FormData（多个图片使用同一个字段名）
+              formData.append(imageFiles.fieldName, blob, fileName);
+            } catch (err) {
+              console.error(`处理参考图失败 (${imageUrl}):`, err);
+              throw new Error(`处理参考图失败: ${(err as Error).message}`);
+            }
+          }
+          console.log(`[fetchWithAuth] 所有参考图已添加到 FormData`);
+        }
+        
+        // 再处理其他字段
+        for (const [key, value] of Object.entries(body)) {
+          // 跳过已经作为文件处理的字段
+          if (imageFiles && key === imageFiles.fieldName) {
+            continue;
+          }
+          
+          if (Array.isArray(value)) {
+            // 数组字段转为 JSON 字符串
+            formData.append(key, JSON.stringify(value));
+          } else if (typeof value === 'object' && value !== null) {
+            formData.append(key, JSON.stringify(value));
+          } else {
+            formData.append(key, String(value));
+          }
+          console.log(`[fetchWithAuth] FormData 字段: ${key} = ${String(value).slice(0, 100)}`);
+        }
+        requestBody = formData;
+        console.log(`[fetchWithAuth] FormData 构建完成，准备发送到: ${endpoint}`);
+        // 不设置 Content-Type，让浏览器/Node 自动设置 boundary
+      } else {
+        // 使用 JSON 格式
+        headers['Content-Type'] = 'application/json';
+        requestBody = JSON.stringify(body);
+      }
+
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
+        headers,
+        body: requestBody,
         signal: controller.signal,
       });
+
       return response;
     } catch (fetchErr) {
-      if ((fetchErr as Error).name === 'AbortError') {
+      const error = fetchErr as Error & { cause?: unknown };
+      const cause = error.cause ? String(error.cause) : '';
+      const detailParts = [error.message, cause && `原因: ${cause}`, `接口: ${endpoint}`].filter(Boolean);
+      if (error.name === 'AbortError') {
         const timeout = timeoutMs || DEFAULT_API_TIMEOUT_MS;
         throw new Error(`API请求超时(已等待${timeout / 1000}秒)，请检查API服务状态或稍后重试`);
       }
-      throw new Error(`API请求网络错误: ${(fetchErr as Error).message}`);
+      throw new Error(`API请求网络错误: ${detailParts.join(' | ')}`);
     }
   }
 
@@ -1283,15 +1411,11 @@ class TaskQueue {
   // Jimeng 即梦 AI 格式
   private async callJimengAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
+    const taskReferenceImages = this.getReferenceImages(task);
     let endpoint = model.api_endpoint.replace(/\/+$/, '');
 
     // 判断是否有参考图（需要使用图生图接口）
-    const hasReferenceImages = !!task.reference_images && (() => {
-      try {
-        const refs = JSON.parse(task.reference_images);
-        return Array.isArray(refs) && refs.length > 0;
-      } catch { return false; }
-    })();
+    const hasReferenceImages = taskReferenceImages.length > 0;
 
     // 解析 supported_sizes 获取比例
     let ratio = '1:1';
@@ -1371,15 +1495,9 @@ class TaskQueue {
     };
 
     // 添加参考图（仅图生图）
-    const referenceImages = task.reference_images;
-    if (hasReferenceImages && referenceImages) {
-      try {
-        const refImages = JSON.parse(referenceImages);
-        if (Array.isArray(refImages) && refImages.length > 0) {
-          requestBody.images = refImages;
-          console.log(`[Jimeng] 参考图: ${refImages.length} 张`);
-        }
-      } catch {}
+    if (hasReferenceImages) {
+      requestBody.images = taskReferenceImages;
+      console.log(`[Jimeng] 参考图: ${taskReferenceImages.length} 张`);
     }
 
     const response = await this.fetchWithAuth(endpoint, apiKey, requestBody, controller, effectiveTimeoutMs);

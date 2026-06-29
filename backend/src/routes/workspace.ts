@@ -166,6 +166,7 @@ async function submitWorkspaceImageTask(
   const modelResult = query('SELECT * FROM models WHERE id = ? AND is_active = 1', [modelId]);
   const model = modelResult.rows[0];
   if (!model) return { status: 404, error: '模型不存在或已禁用' };
+  if (!model.visible_in_workspace) return { status: 400, error: '该模型不可用于批量生图' };
 
   const allowedModels: string[] = (() => {
     try { return JSON.parse(user.allowed_models || '[]'); } catch { return []; }

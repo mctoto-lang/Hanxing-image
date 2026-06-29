@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { Wand2, ImagePlus, RotateCcw, Loader2, Trash2, FlipHorizontal, Eye, MoreHorizontal, AlertTriangle, Search, Check } from 'lucide-react'
+import { Wand2, ImagePlus, RotateCcw, Loader2, FlipHorizontal, Eye, MoreHorizontal, AlertTriangle, Search, Check, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -34,7 +34,6 @@ interface FlipCardProps {
   selectedSize: string | null
   onToggleSelect: (id: number) => void
   onCardUpdated: (card: PromptCard) => void
-  onCardDeleted: (id: number) => void
   onCardGeneratingImage?: (id: number, generating: boolean) => void
   // 外部批量操作加载状态
   batchDeepening?: boolean
@@ -70,7 +69,6 @@ export default memo(function WorkspaceFlipCard({
   selectedSize,
   onToggleSelect,
   onCardUpdated,
-  onCardDeleted,
   onCardGeneratingImage,
   batchDeepening = false,
   batchRegenerating = false,
@@ -84,6 +82,7 @@ export default memo(function WorkspaceFlipCard({
   const [showGallery, setShowGallery] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [previousPrompt, setPreviousPrompt] = useState<string | null>(null)
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cardRef = useRef(card)
@@ -163,6 +162,11 @@ export default memo(function WorkspaceFlipCard({
     }
   }
 
+  const updatePrompt = (nextPrompt: string) => {
+    setPrompt(nextPrompt)
+    onCardUpdated({ ...card, prompt: nextPrompt })
+  }
+
   const handleDeepen = async () => {
     if (!selectedDeepenTemplate) { toast.error('请先在生成配置中选择细化模板'); return }
     setDeepening(true)
@@ -173,8 +177,8 @@ export default memo(function WorkspaceFlipCard({
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '细化失败')
-      setPrompt(data.new_prompt)
-      onCardUpdated({ ...card, prompt: data.new_prompt })
+      setPreviousPrompt(prompt)
+      updatePrompt(data.new_prompt)
       toast.success('提示词已细化')
     } catch (err) {
       toast.error((err as Error).message)
@@ -193,8 +197,8 @@ export default memo(function WorkspaceFlipCard({
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '重新生成失败')
-      setPrompt(data.new_prompt)
-      onCardUpdated({ ...card, prompt: data.new_prompt })
+      setPreviousPrompt(prompt)
+      updatePrompt(data.new_prompt)
       toast.success('提示词已重新生成')
     } catch (err) {
       toast.error((err as Error).message)
@@ -224,15 +228,19 @@ export default memo(function WorkspaceFlipCard({
     }
   }
 
-  const handleDelete = async () => {
+  const handleUndoPrompt = async () => {
+    if (!previousPrompt) return
     try {
       const res = await apiFetch(`/api/workspace/cards/${card.id}`, {
-        method: 'DELETE',
+        method: 'PATCH',
+        body: { prompt: previousPrompt },
       })
       if (!res.ok) throw new Error()
-      onCardDeleted(card.id)
+      updatePrompt(previousPrompt)
+      setPreviousPrompt(null)
+      toast.success('已撤回到上一次提示词')
     } catch {
-      toast.error('删除卡片失败')
+      toast.error('撤回失败')
     }
   }
 
@@ -539,6 +547,18 @@ export default memo(function WorkspaceFlipCard({
 
               {!batchMode && (
                 <div className="flex justify-end gap-2 shrink-0">
+                  {previousPrompt && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 rounded-lg px-3 text-[11px]"
+                      onClick={handleUndoPrompt}
+                      disabled={isLoading}
+                    >
+                      <Undo2 className="h-3.5 w-3.5" />
+                      撤回
+                    </Button>
+                  )}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -561,10 +581,6 @@ export default memo(function WorkspaceFlipCard({
                       <DropdownMenuItem onClick={handleGenerateImage} disabled={isLoading || generatingImage}>
                         {generatingImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
                         {hasImage ? '重新生成图片' : '生成图片'}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem variant="destructive" onClick={handleDelete} disabled={isLoading}>
-                        <Trash2 className="h-4 w-4 text-red-600" />
-                        删除卡片
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
