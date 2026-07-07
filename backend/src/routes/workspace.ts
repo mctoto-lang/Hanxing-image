@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
-import { fissionPrompts, extractPromptDescriptions, deepenPrompt } from '../services/workspaceAI.js';
+import { fissionPrompts, extractPromptDescriptions, extractNumberedPromptReplacements, deepenPrompt } from '../services/workspaceAI.js';
 import { taskQueue } from '../services/queue.js';
 import { chatTaskQueue } from '../services/chatQueue.js';
 import sharp from 'sharp';
@@ -669,6 +669,133 @@ workspaceRouter.post('/tasks/:id/cards', authMiddleware, async (req: AuthRequest
     return res.status(201).json(createdCard);
   } catch {
     return res.status(500).json({ error: '创建卡片失败' });
+  }
+});
+
+workspaceRouter.post('/tasks/:id/extract-numbered-prompts', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { template_id, input } = req.body;
+    if (!template_id || !input || typeof input !== 'string') {
+      return res.status(400).json({ error: '提取模板和提示词内容不能为空' });
+    }
+
+    const taskCheck = query(
+      'SELECT id FROM workspace_tasks WHERE id = ? AND user_id = ?',
+      [req.params.id, req.userId]
+    );
+    if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
+
+    const items = await extractNumberedPromptReplacements(Number(template_id), input, Number(req.params.id), req.userId!);
+    if (items.length === 0) {
+      return res.status(422).json({ error: '未提取到带数字序号的提示词' });
+    }
+
+    return res.json({ items });
+  } catch (err) {
+    return res.status(500).json({ error: `提取失败: ${(err as Error).message}` });
+  }
+});
+
+workspaceRouter.post('/tasks/:id/cards/batch-replace-prompts', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { selected_card_ids, items } = req.body;
+    if (!Array.isArray(selected_card_ids) || selected_card_ids.length === 0 || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: '参数不完整' });
+    }
+
+    const normalizedItems = items
+      .map((item: any) => ({ card_index: Number(item?.card_index), prompt: typeof item?.prompt === 'string' ? item.prompt.trim() : '' }))
+      .filter((item: any) => Number.isInteger(item.card_index) && item.card_index > 0 && item.prompt);
+
+    if (normalizedItems.length === 0) {
+      return res.status(400).json({ error: '没有有效的编号提示词' });
+    }
+
+    const seenIndexes = new Set<number>();
+    for (const item of normalizedItems) {
+      if (seenIndexes.has(item.card_index)) {
+        return res.status(400).json({ error: `编号 #${item.card_index} 重复，请先合并或修改` });
+      }
+      seenIndexes.add(item.card_index);
+    }
+
+    const taskId = Number(req.params.id);
+    const taskCheck = query('SELECT id FROM workspace_tasks WHERE id = ? AND user_id = ?', [taskId, req.userId]);
+    if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
+
+    const selectedIds = [...new Set(selected_card_ids.map((id: any) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0))];
+    if (selectedIds.length === 0) return res.status(400).json({ error: '请选择要操作的卡片' });
+
+    const selectedPlaceholders = selectedIds.map(() => '?').join(',');
+    const selectedCardsResult = query(
+      `SELECT pc.id, pc.task_id, pc.card_index, pc.prompt, pc.selected_image_id, pc.created_at, pc.updated_at
+       FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id
+       WHERE pc.task_id = ? AND pc.id IN (${selectedPlaceholders}) AND t.user_id = ?`,
+      [taskId, ...selectedIds, req.userId]
+    );
+    const selectedCards = selectedCardsResult.rows as any[];
+    if (selectedCards.length === 0) return res.status(404).json({ error: '未找到有权操作的卡片' });
+
+    const allIndexesResult = query('SELECT id, card_index FROM prompt_cards WHERE task_id = ?', [taskId]);
+    const selectedByIndex = new Map<number, any>(selectedCards.map(card => [Number(card.card_index), card]));
+    const existingByIndex = new Map<number, any>((allIndexesResult.rows as any[]).map(card => [Number(card.card_index), card]));
+
+    const result = transaction(() => {
+      const updatedCards: any[] = [];
+      const createdCards: any[] = [];
+      const conflicts: any[] = [];
+
+      for (const item of normalizedItems) {
+        const selectedCard = selectedByIndex.get(item.card_index);
+        if (selectedCard) {
+          query('UPDATE prompt_cards SET prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [item.prompt, selectedCard.id]);
+          updatedCards.push({ ...selectedCard, prompt: item.prompt });
+          continue;
+        }
+
+        const existingCard = existingByIndex.get(item.card_index);
+        if (existingCard) {
+          conflicts.push({ card_index: item.card_index, card_id: existingCard.id, prompt: item.prompt });
+          continue;
+        }
+
+        const insertResult = query(
+          'INSERT INTO prompt_cards (task_id, card_index, prompt) VALUES (?, ?, ?)',
+          [taskId, item.card_index, item.prompt]
+        );
+        createdCards.push({
+          id: insertResult.lastInsertRowid,
+          task_id: taskId,
+          card_index: item.card_index,
+          prompt: item.prompt,
+          selected_image_id: null,
+          sel_img_id: null,
+          sel_img_url: null,
+          sel_img_size: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [taskId]);
+      const cardCount = parseInt(countResult.rows[0].count);
+      query('UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [cardCount, taskId]);
+
+      return { updatedCards, createdCards, conflicts, cardCount };
+    });
+
+    return res.json({
+      message: '批量替换完成',
+      updated_count: result.updatedCards.length,
+      created_count: result.createdCards.length,
+      conflict_count: result.conflicts.length,
+      updated_cards: result.updatedCards,
+      created_cards: result.createdCards,
+      conflicts: result.conflicts,
+      card_count: result.cardCount,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: `批量替换失败: ${(err as Error).message}` });
   }
 });
 

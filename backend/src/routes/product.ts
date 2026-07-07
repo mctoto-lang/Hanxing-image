@@ -75,10 +75,11 @@ router.get('/templates', authMiddleware, async (req: AuthRequest, res: Response,
   try {
     const userId = req.userId!;
     const isAdmin = req.userRole === 'admin';
+    const scope = Array.isArray(req.query.scope) ? req.query.scope[0] : req.query.scope;
+    const showAllTemplates = isAdmin && scope === 'all';
 
     let templates;
-    if (isAdmin) {
-      // 管理员可查看所有模板
+    if (showAllTemplates) {
       const result = query(`
         SELECT t.*, u.username, g.name as group_name, g.badge_color as group_badge_color,
           (SELECT COUNT(*) FROM product_sub_templates WHERE main_template_id = t.id) as sub_template_count
@@ -89,7 +90,6 @@ router.get('/templates', authMiddleware, async (req: AuthRequest, res: Response,
       `);
       templates = result.rows;
     } else {
-      // 普通用户只能看公开模板 + 自己的私有模板
       const result = query(`
         SELECT t.*, u.username, g.name as group_name, g.badge_color as group_badge_color,
           (SELECT COUNT(*) FROM product_sub_templates WHERE main_template_id = t.id) as sub_template_count
@@ -117,6 +117,8 @@ router.get('/templates/:id', authMiddleware, async (req: AuthRequest, res: Respo
     const templateId = parseInt((Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) || "0");
     const userId = req.userId!;
     const isAdmin = req.userRole === 'admin';
+    const scope = Array.isArray(req.query.scope) ? req.query.scope[0] : req.query.scope;
+    const showAllTemplates = isAdmin && scope === 'all';
 
     // 查询主模板
     const templateResult = selectTemplateWithGroup(templateId);
@@ -127,8 +129,7 @@ router.get('/templates/:id', authMiddleware, async (req: AuthRequest, res: Respo
 
     const template = templateResult.rows[0];
 
-    // 权限检查：私有模板只有创建者和管理员可查看
-    if (template.visibility === 'private' && template.user_id !== userId && !isAdmin) {
+    if (template.visibility === 'private' && template.user_id !== userId && !showAllTemplates) {
       return res.status(403).json({ error: '无权访问此模板' });
     }
 

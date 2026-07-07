@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
-import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp } from 'lucide-react'
+import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp, Replace } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -28,6 +28,7 @@ import WorkspaceSizeSelectDialog from '@/components/workspace/WorkspaceSizeSelec
 import WorkspaceExportDialog from '@/components/workspace/WorkspaceExportDialog'
 import WorkspaceBatchConfirmDialog from '@/components/workspace/WorkspaceBatchConfirmDialog'
 import WorkspaceGenerationConfigDialog from '@/components/workspace/WorkspaceGenerationConfigDialog'
+import WorkspaceBatchReplacePromptDialog from '@/components/workspace/WorkspaceBatchReplacePromptDialog'
 import { QueueStatusBadge } from '@/components/QueueStatusBadge'
 
 export interface WorkspaceTask {
@@ -152,12 +153,13 @@ interface StoredGenerationConfig {
   fissionTemplate: Template | null
   refineTemplate: Template | null
   regenTemplate: Template | null
+  extractTemplate: Template | null
   imageModel: ImageModel | null
   size: string | null
 }
 
 function loadStoredGenerationConfig(): StoredGenerationConfig {
-  const emptyConfig = { fissionTemplate: null, refineTemplate: null, regenTemplate: null, imageModel: null, size: null }
+  const emptyConfig = { fissionTemplate: null, refineTemplate: null, regenTemplate: null, extractTemplate: null, imageModel: null, size: null }
   if (typeof window === 'undefined') return emptyConfig
 
   try {
@@ -392,6 +394,7 @@ export default function WorkspacePage() {
   const [selectedFissionTemplate, setSelectedFissionTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().fissionTemplate)
   const [selectedDeepenTemplate, setSelectedDeepenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().refineTemplate)
   const [selectedRegenTemplate, setSelectedRegenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().regenTemplate)
+  const [selectedExtractTemplate, setSelectedExtractTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().extractTemplate)
   const [selectedImageModel, setSelectedImageModel] = useState<ImageModel | null>(() => loadStoredGenerationConfig().imageModel)
   const [selectedSize, setSelectedSize] = useState<string | null>(() => loadStoredGenerationConfig().size)
 
@@ -402,6 +405,7 @@ export default function WorkspacePage() {
   const [showModelDialog, setShowModelDialog] = useState(false)
   const [showSizeDialog, setShowSizeDialog] = useState(false)
   const [showGenerationConfigDialog, setShowGenerationConfigDialog] = useState(false)
+  const [showBatchReplacePromptDialog, setShowBatchReplacePromptDialog] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [batchConfirm, setBatchConfirm] = useState<{ action: string; count: number; onConfirm: () => void } | null>(null)
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<WorkspaceTask | null>(null)
@@ -728,18 +732,20 @@ export default function WorkspacePage() {
     }
   }
 
-  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; regenTemplate: Template | null; imageModel: ImageModel | null; size: string | null }) => {
+  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; regenTemplate: Template | null; extractTemplate?: Template | null; imageModel: ImageModel | null; size: string | null }) => {
     if (config) {
       const nextConfig = {
         fissionTemplate: config.fissionTemplate ?? selectedFissionTemplate,
         refineTemplate: config.refineTemplate ?? selectedDeepenTemplate,
         regenTemplate: config.regenTemplate ?? selectedRegenTemplate,
+        extractTemplate: config.extractTemplate ?? selectedExtractTemplate,
         imageModel: config.imageModel ?? selectedImageModel,
         size: config.size ?? selectedSize,
       }
       setSelectedFissionTemplate(nextConfig.fissionTemplate)
       setSelectedDeepenTemplate(nextConfig.refineTemplate)
       setSelectedRegenTemplate(nextConfig.regenTemplate)
+      setSelectedExtractTemplate(nextConfig.extractTemplate)
       setSelectedImageModel(nextConfig.imageModel)
       setSelectedSize(nextConfig.size)
       saveStoredGenerationConfig(nextConfig)
@@ -1062,6 +1068,17 @@ export default function WorkspacePage() {
     }
   }
 
+  const handleBatchReplacePromptCompleted = async (cardCount: number) => {
+    if (activeTaskId) {
+      await fetchCards(activeTaskId)
+      setTasks(prev => prev.map(t => t.id === activeTaskId ? { ...t, card_count: cardCount } : t))
+      setActiveTask(prev => prev ? { ...prev, card_count: cardCount } : prev)
+    }
+    setSelectedCardIds(new Set())
+    setBatchMode(false)
+    await fetchTasks(1)
+  }
+
   return (
     <div className="flex h-full">
       {showSidebar && (
@@ -1192,8 +1209,8 @@ export default function WorkspacePage() {
               >
                 生成配置
                 <span className="max-w-[180px] truncate text-white/80">
-                  {selectedDeepenTemplate || selectedImageModel || selectedSize
-                    ? [selectedDeepenTemplate?.name, selectedImageModel?.display_name || selectedImageModel?.name, selectedSize].filter(Boolean).join(' / ')
+                  {selectedDeepenTemplate || selectedExtractTemplate || selectedImageModel || selectedSize
+                    ? [selectedDeepenTemplate?.name, selectedExtractTemplate?.name, selectedImageModel?.display_name || selectedImageModel?.name, selectedSize].filter(Boolean).join(' / ')
                     : '未选择'}
                 </span>
                 <ChevronDown className="h-3 w-3" />
@@ -1304,6 +1321,18 @@ export default function WorkspacePage() {
                           >
                             <Sparkles className="h-4 w-4 mr-2" />
                             批量细化提示词
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (!selectedExtractTemplate) {
+                                toast.error('请先在生成配置中选择提取提示词模板')
+                                return
+                              }
+                              setShowBatchReplacePromptDialog(true)
+                            }}
+                          >
+                            <Replace className="h-4 w-4 mr-2" />
+                            批量替换提示词
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
@@ -1470,17 +1499,29 @@ export default function WorkspacePage() {
         selectedFissionTemplate={selectedFissionTemplate}
         selectedRefineTemplate={selectedDeepenTemplate}
         selectedRegenTemplate={selectedRegenTemplate}
+        selectedExtractTemplate={selectedExtractTemplate}
         selectedImageModel={selectedImageModel}
         selectedSize={selectedSize}
         onApply={config => {
           setSelectedFissionTemplate(config.fissionTemplate)
           setSelectedDeepenTemplate(config.refineTemplate)
           setSelectedRegenTemplate(config.regenTemplate)
+          setSelectedExtractTemplate(config.extractTemplate)
           setSelectedImageModel(config.imageModel)
           setSelectedSize(config.size)
           saveStoredGenerationConfig(config)
         }}
         onClose={() => setShowGenerationConfigDialog(false)}
+      />
+
+      <WorkspaceBatchReplacePromptDialog
+        open={showBatchReplacePromptDialog}
+        taskId={activeTaskId}
+        selectedTemplate={selectedExtractTemplate}
+        cards={cards}
+        selectedCardIds={selectedCardIds}
+        onClose={() => setShowBatchReplacePromptDialog(false)}
+        onCompleted={handleBatchReplacePromptCompleted}
       />
 
       <WorkspaceExportDialog

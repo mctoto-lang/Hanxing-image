@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Loader2, Eye, ImagePlus, X, Plus, Tags, FilePlus2, Pencil, Trash2, Check, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react'
-import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon } from '@/components/icons'
+import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon, Shield01Icon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -133,6 +133,7 @@ interface ReferenceImageItem {
 
 interface ProductMainTemplate {
   id: number
+  user_id?: number
   group_id?: number | null
   group_name?: string | null
   group_badge_color?: TemplateGroupColor | null
@@ -278,6 +279,7 @@ function buildUploadingReferenceItem(file: File, index: number): ReferenceImageI
 }
 
 export default function ProductImagePage() {
+  const isAdminUser = localStorage.getItem('userRole') === 'admin'
   const [models, setModels] = useState<Model[]>([])
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -295,6 +297,7 @@ export default function ProductImagePage() {
   const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [templateSearch, setTemplateSearch] = useState('')
   const [templateGroupFilter, setTemplateGroupFilter] = useState('all')
+  const [adminTemplateViewEnabled, setAdminTemplateViewEnabled] = useState(false)
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
   const [loadedTemplateDetails, setLoadedTemplateDetails] = useState<LoadedTemplateMap>({})
   const [templateSelectedSubTemplateIds, setTemplateSelectedSubTemplateIds] = useState<Set<number>>(new Set())
@@ -553,13 +556,27 @@ export default function ProductImagePage() {
     const fetchProductHistory = async () => {
       setHistoryLoading(true)
       try {
-        const res = await apiFetch('/api/tasks/history?limit=20&source=product')
-        if (!res.ok) {
-          setTasks([])
-          return
+        const pageSize = 100
+        let page = 1
+        let total = 0
+        const taskList: HistoryTaskResponse[] = []
+
+        while (page === 1 || taskList.length < total) {
+          const res = await apiFetch(`/api/tasks/history?limit=${pageSize}&page=${page}&source=product`)
+          if (!res.ok) {
+            setTasks([])
+            return
+          }
+
+          const data = await safeResponseJson(res)
+          const pageTasks = Array.isArray(data.tasks) ? data.tasks as HistoryTaskResponse[] : []
+          total = typeof data.total === 'number' ? data.total : pageTasks.length
+          taskList.push(...pageTasks)
+
+          if (pageTasks.length < pageSize) break
+          page += 1
         }
-        const data = await safeResponseJson(res)
-        const taskList = Array.isArray(data.tasks) ? data.tasks as HistoryTaskResponse[] : []
+
         const normalizedTasks: GenerationTask[] = taskList.map((task) => ({
           id: task.id,
           status: task.status,
@@ -978,13 +995,15 @@ export default function ProductImagePage() {
     return groups
   }
 
+  const getTemplateScopeQuery = () => adminTemplateViewEnabled ? '?scope=all' : ''
+
   const loadTemplates = async () => {
     if (templates.length > 0 || loadingTemplates) return
     setLoadingTemplates(true)
     try {
       const [groupResult, templateResult] = await Promise.all([
         apiFetch('/api/product/template-groups'),
-        apiFetch('/api/product/templates'),
+        apiFetch(`/api/product/templates${getTemplateScopeQuery()}`),
       ])
       const groupData = await safeResponseJson(groupResult)
       if (!groupResult.ok) throw new Error((groupData.error as string) || '加载模板分组失败')
@@ -1011,7 +1030,7 @@ export default function ProductImagePage() {
     try {
       const [groups, res] = await Promise.all([
         loadTemplateGroups(),
-        apiFetch('/api/product/templates'),
+        apiFetch(`/api/product/templates${getTemplateScopeQuery()}`),
       ])
       const data = await safeResponseJson(res)
       if (!res.ok) throw new Error((data.error as string) || '加载模板失败')
@@ -1027,7 +1046,7 @@ export default function ProductImagePage() {
   const fetchTemplateDetail = async (templateId: number, templateList = templates) => {
     const cached = loadedTemplateDetails[templateId]
     if (cached) return cached
-    const res = await apiFetch(`/api/product/templates/${templateId}`)
+    const res = await apiFetch(`/api/product/templates/${templateId}${getTemplateScopeQuery()}`)
     const data = await safeResponseJson(res)
     if (!res.ok) throw new Error((data.error as string) || '加载模板详情失败')
     const detail = data as unknown as ProductMainTemplate
@@ -1132,6 +1151,21 @@ export default function ProductImagePage() {
     if (open) void loadTemplates()
   }
 
+  const handleAdminTemplateViewToggle = () => {
+    if (!isAdminUser || loadingTemplates) return
+    setAdminTemplateViewEnabled(prev => !prev)
+    setTemplates([])
+    setLoadedTemplateDetails({})
+    setSelectedTemplateId(null)
+    setTemplateGroupFilter('all')
+    setTemplateSelectedSubTemplateIds(new Set())
+  }
+
+  useEffect(() => {
+    if (!showTemplateDialog) return
+    void loadTemplates()
+  }, [adminTemplateViewEnabled])
+
   const selectedSubTemplates = useMemo(() => {
     const selectedIds = templateSelectedSubTemplateIds
     return Object.values(loadedTemplateDetails)
@@ -1173,6 +1207,14 @@ export default function ProductImagePage() {
     setCount(selected.length)
     setShowTemplateDialog(false)
     toast.success(successMessage)
+  }
+
+  const handleCancelAppliedTemplate = () => {
+    setAppliedTemplateSubTemplates([])
+    setAppliedTemplatePrompts({})
+    setActiveAppliedTemplateIndex(0)
+    setCount(1)
+    toast.success('已取消应用模板')
   }
 
   const handleApplyTemplateSelection = () => {
@@ -1549,6 +1591,17 @@ export default function ProductImagePage() {
   }
 
   const canGenerate = uploadedReferenceImages.length > 0 && (hasAppliedTemplates ? appliedTemplateSubTemplates.every(item => (appliedTemplatePrompts[item.id] ?? item.fixed_prompt ?? '').trim().length > 0) : prompt.trim().length > 0)
+  const templateFilterGroups = Array.from(
+    templates.reduce<Map<number, ProductTemplateGroup>>((groupMap, template) => {
+      if (!template.group_id || groupMap.has(template.group_id)) return groupMap
+      groupMap.set(template.group_id, {
+        id: template.group_id,
+        name: template.group_name || '默认分组',
+        badge_color: template.group_badge_color || 'slate',
+      })
+      return groupMap
+    }, new Map()).values()
+  )
   const filteredTemplates = templates.filter(item => {
     const keyword = templateSearch.trim().toLowerCase()
     const matchesKeyword = !keyword || item.name.toLowerCase().includes(keyword) || (item.description || '').toLowerCase().includes(keyword)
@@ -1587,6 +1640,12 @@ export default function ProductImagePage() {
           <h1 className="text-sm font-semibold tracking-tight text-foreground">商品主图</h1>
 
           <div className="flex items-center gap-3">
+            {hasAppliedTemplates && (
+              <Button type="button" size="sm" onClick={handleCancelAppliedTemplate} className="bg-red-600 text-white hover:bg-red-700 hover:text-white">
+                <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={1.7} className="mr-1.5" />
+                取消应用模板
+              </Button>
+            )}
             <Dialog open={showTemplateDialog} onOpenChange={handleTemplateDialogOpenChange}>
               <DialogTrigger
                 render={
@@ -1598,11 +1657,25 @@ export default function ProductImagePage() {
               />
               <DialogContent className="flex h-[min(86vh,820px)] !w-[min(96vw,1280px)] !max-w-none flex-col gap-0 overflow-hidden border border-border p-0 shadow-xl sm:!max-w-[min(96vw,1280px)]">
                 <DialogHeader className="border-b border-border px-5 py-4 pr-12">
-                  <DialogTitle className="text-lg">模板管理</DialogTitle>
+                  <div className="flex items-center gap-3">
+                    <DialogTitle className="text-lg">模板管理</DialogTitle>
+                    {isAdminUser && (
+                      <Button
+                        size="sm"
+                        variant={adminTemplateViewEnabled ? 'default' : 'outline'}
+                        onClick={handleAdminTemplateViewToggle}
+                        disabled={loadingTemplates}
+                        className={cn('h-7 rounded-md px-2.5 text-xs', adminTemplateViewEnabled && 'bg-amber-600 text-white hover:bg-amber-700')}
+                      >
+                        <HugeiconsIcon icon={Shield01Icon} size={13} strokeWidth={1.7} className="mr-1.5" />
+                        {adminTemplateViewEnabled ? '管理员视角' : '普通视角'}
+                      </Button>
+                    )}
+                  </div>
                 </DialogHeader>
                 <TemplateManagementContent
                   templates={displayTemplates}
-                  templateGroups={templateGroups}
+                  templateGroups={templateFilterGroups}
                   currentTemplate={currentTemplate}
                   currentSubTemplates={currentSubTemplates}
                   selectedSubTemplates={selectedSubTemplates}
@@ -2455,7 +2528,7 @@ function TemplateManagementContent({
                   <Tags className="h-3.5 w-3.5" />
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent side="bottom" align="start" sideOffset={4} alignItemWithTrigger={false} className="min-w-0">
+                <SelectContent side="bottom" align="start" sideOffset={4} alignItemWithTrigger={false} className="max-h-72 min-w-0 overflow-y-auto">
                   <SelectItem value="all">分组</SelectItem>
                   {templateGroups.map(group => (
                     <SelectItem key={group.id} value={String(group.id)}>
@@ -2626,7 +2699,12 @@ function TemplateManagementContent({
                         event.preventDefault()
                         onToggleSubTemplate(subTemplate, !checked)
                       }
-                    }} className={cn('group relative cursor-pointer gap-0 overflow-hidden rounded-xl py-0 ring-1 ring-foreground/10', checked && 'ring-2 ring-blue-600 bg-blue-50/20 shadow-sm')}>
+                    }} className={cn(
+                      'group relative cursor-pointer gap-0 overflow-hidden rounded-xl border py-0 ring-1 transition-all duration-300 ease-out',
+                      checked
+                        ? 'border-blue-600 bg-blue-50/20 shadow-[0_0_0_3px_rgba(37,99,235,0.12),0_12px_28px_rgba(37,99,235,0.16)] ring-blue-600'
+                        : 'border-transparent bg-card shadow-none ring-foreground/10 hover:border-foreground/20 hover:bg-muted/20 hover:ring-foreground/15'
+                    )}>
                       {checked && (
                         <div className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm">
                           <Check className="h-3.5 w-3.5" />
