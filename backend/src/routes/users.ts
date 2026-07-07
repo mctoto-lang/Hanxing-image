@@ -5,10 +5,18 @@ import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middlew
 
 export const userRouter = Router();
 
+function getRoleByGroupId(groupId: number | null | undefined) {
+  if (!groupId) return 'user';
+  const groupResult = query('SELECT description FROM permission_groups WHERE id = ?', [groupId]);
+  const group = groupResult.rows[0];
+  if (!group) return null;
+  return group.description === 'admin' ? 'admin' : 'user';
+}
+
 userRouter.get('/', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRequest, res) => {
   try {
     const result = query(
-      `SELECT u.id, u.username, u.role, u.credits, u.creative_credits, u.project_credits, u.daily_credits_remaining, u.daily_credits_date, u.is_active, u.created_at, g.name as group_name
+      `SELECT u.id, u.username, COALESCE(NULLIF(u.nickname, ''), u.username) as nickname, u.role, u.credits, u.creative_credits, u.project_credits, u.daily_credits_remaining, u.daily_credits_date, u.group_id, u.is_active, u.created_at, g.name as group_name
        FROM users u LEFT JOIN permission_groups g ON u.group_id = g.id
        ORDER BY u.created_at DESC`
     );
@@ -20,9 +28,13 @@ userRouter.get('/', authMiddleware, adminMiddlewareRealtime, async (_req: AuthRe
 
 userRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
-    const { username, password, group_id, role } = req.body;
+    const { username, password, nickname, group_id } = req.body;
+    const groupId = group_id ? Number(group_id) : null;
     if (!username || typeof username !== 'string' || username.trim().length < 3 || username.length > 50) {
       return res.status(400).json({ error: '用户名长度需为 3-50 个字符' });
+    }
+    if (nickname !== undefined && (typeof nickname !== 'string' || nickname.trim().length > 50)) {
+      return res.status(400).json({ error: '用户昵称不能超过 50 个字符' });
     }
     if (!password || typeof password !== 'string' || password.length < 4 || password.length > 100) {
       return res.status(400).json({ error: '密码长度需为 4-100 个字符' });
@@ -31,21 +43,25 @@ userRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRe
 
     let initialCreativeCredits = 0;
     let initialProjectCredits = 0;
-    if (group_id) {
-      const groupResult = query('SELECT initial_creative_credits, initial_project_credits FROM permission_groups WHERE id = ?', [group_id]);
+    const userRole = getRoleByGroupId(groupId);
+    if (userRole === null) {
+      return res.status(400).json({ error: '权限组不存在' });
+    }
+    if (groupId) {
+      const groupResult = query('SELECT initial_creative_credits, initial_project_credits FROM permission_groups WHERE id = ?', [groupId]);
       if (groupResult.rows.length > 0) {
         initialCreativeCredits = groupResult.rows[0].initial_creative_credits || 0;
         initialProjectCredits = groupResult.rows[0].initial_project_credits || 0;
       }
     }
 
-    const userRole = role === 'admin' ? 'admin' : 'user';
+    const userNickname = nickname?.trim() || username.trim();
     const result = query(
-      'INSERT INTO users (username, password_hash, role, creative_credits, project_credits, group_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, passwordHash, userRole, initialCreativeCredits, initialProjectCredits, group_id || null]
+      'INSERT INTO users (username, nickname, password_hash, role, creative_credits, project_credits, group_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [username.trim(), userNickname, passwordHash, userRole, initialCreativeCredits, initialProjectCredits, groupId]
     );
     const inserted = query(
-      'SELECT id, username, role, creative_credits, project_credits, group_id FROM users WHERE id = ?',
+      'SELECT id, username, nickname, role, creative_credits, project_credits, group_id FROM users WHERE id = ?',
       [result.lastInsertRowid]
     );
     return res.status(201).json({ user: inserted.rows[0] });
@@ -114,24 +130,53 @@ userRouter.put('/:id/group', authMiddleware, adminMiddlewareRealtime, async (req
     if (!Number.isInteger(group_id) || group_id <= 0) {
       return res.status(400).json({ error: '无效的权限组ID' });
     }
-    const groupCheck = query('SELECT id FROM permission_groups WHERE id = ?', [group_id]);
+    const groupCheck = query('SELECT id, description FROM permission_groups WHERE id = ?', [group_id]);
     if (groupCheck.rows.length === 0) {
       return res.status(400).json({ error: '权限组不存在' });
     }
+    const newRole = groupCheck.rows[0].description === 'admin' ? 'admin' : 'user';
     const result = query(
-      'UPDATE users SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [group_id, req.params.id]
+      'UPDATE users SET group_id = ?, role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [group_id, newRole, req.params.id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: '用户不存在' });
     }
     const updated = query(
-      'SELECT id, username, group_id FROM users WHERE id = ?',
+      'SELECT id, username, nickname, role, group_id FROM users WHERE id = ?',
       [req.params.id]
     );
     return res.json({ user: updated.rows[0] });
   } catch {
     return res.status(500).json({ error: '更新权限组失败' });
+  }
+});
+
+userRouter.put('/:id/profile', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
+  try {
+    const { nickname, group_id } = req.body;
+    if (nickname === undefined || typeof nickname !== 'string' || nickname.trim().length === 0 || nickname.trim().length > 50) {
+      return res.status(400).json({ error: '用户昵称长度需为 1-50 个字符' });
+    }
+    const groupId = group_id ? Number(group_id) : null;
+    const userRole = getRoleByGroupId(groupId);
+    if (userRole === null) {
+      return res.status(400).json({ error: '权限组不存在' });
+    }
+    const result = query(
+      'UPDATE users SET nickname = ?, group_id = ?, role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [nickname.trim(), groupId, userRole, req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    const updated = query(
+      'SELECT id, username, nickname, role, group_id FROM users WHERE id = ?',
+      [req.params.id]
+    );
+    return res.json({ user: updated.rows[0] });
+  } catch {
+    return res.status(500).json({ error: '更新用户信息失败' });
   }
 });
 

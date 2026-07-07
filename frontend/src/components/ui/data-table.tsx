@@ -46,6 +46,7 @@ interface DataTableProps<TData, TValue> {
   manualPagination?: boolean
   pageCount?: number
   totalCount?: number
+  columnLabels?: Record<string, string>
 }
 
 export function DataTable<TData, TValue>({
@@ -62,6 +63,7 @@ export function DataTable<TData, TValue>({
   manualPagination = false,
   pageCount,
   totalCount,
+  columnLabels = {},
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([])
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([])
@@ -143,7 +145,7 @@ export function DataTable<TData, TValue>({
                           column.toggleVisibility(!!value)
                         }
                       >
-                        {column.id}
+                        {columnLabels[column.id] || column.id}
                       </DropdownMenuCheckboxItem>
                     )
                   })}

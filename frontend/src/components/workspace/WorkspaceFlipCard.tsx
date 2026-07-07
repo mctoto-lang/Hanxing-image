@@ -370,9 +370,10 @@ export default memo(function WorkspaceFlipCard({
               style={{ backfaceVisibility: 'hidden' }}
             >
               {hasGeneratingImage ? (
-                <div className="flex flex-col items-center justify-center h-full gap-2">
-                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <span className="text-xs text-muted-foreground">生成中...</span>
+                <div className="flex h-full items-center justify-center">
+                  <span className="animate-shimmer-text bg-[linear-gradient(110deg,hsl(var(--muted-foreground))_30%,hsl(var(--foreground))_45%,hsl(var(--muted-foreground))_60%)] bg-[length:320%_100%] bg-clip-text text-sm font-medium text-transparent [will-change:background-position]">
+                    生成中
+                  </span>
                 </div>
               ) : hasFailedImage ? (
                 <div

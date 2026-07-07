@@ -37,8 +37,8 @@ interface WorkspaceImage {
   task_created_at: string
 }
 
-type SourceFilter = 'all' | 'creative' | 'project' | 'batch'
-type AssetKind = 'creative' | 'project' | 'batch'
+type SourceFilter = 'all' | 'creative' | 'project' | 'product' | 'batch'
+type AssetKind = 'creative' | 'project' | 'product' | 'batch'
 type ViewMode = 'waterfall' | 'grid'
 
 interface AssetImageItem {
@@ -53,13 +53,21 @@ const sourceOptions: { value: SourceFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'creative', label: '自由创作' },
   { value: 'project', label: '项目创作' },
+  { value: 'product', label: '商品主图' },
   { value: 'batch', label: '批量生图' },
 ]
 
 const kindConfig: Record<AssetKind, { label: string; className: string }> = {
   project: { label: '项目', className: 'bg-blue-500/95 text-white' },
   creative: { label: '创作', className: 'bg-purple-500/95 text-white' },
+  product: { label: '商品主图', className: 'bg-orange-500/95 text-white' },
   batch: { label: '批量', className: 'bg-yellow-400/95 text-white' },
+}
+
+function getAssetKind(source: string): AssetKind {
+  if (source === 'project') return 'project'
+  if (source === 'product') return 'product'
+  return 'creative'
 }
 
 function getDateKey(dateStr: string): string {
@@ -307,7 +315,7 @@ export default function HistoryPage() {
     const items: AssetImageItem[] = []
     if (sourceFilter !== 'batch') {
       for (const item of allImages) {
-        const kind: AssetKind = item.task.source === 'project' ? 'project' : 'creative'
+        const kind = getAssetKind(item.task.source)
         items.push({
           imageUrl: item.imageUrl,
           prompt: item.task.prompt || '',

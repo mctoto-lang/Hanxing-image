@@ -30,27 +30,19 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 
 interface User {
   id: number
   username: string
+  nickname: string
   role: string
   credits: number
   creative_credits: number
   project_credits: number
   daily_credits_remaining: number
   daily_credits_date: string
+  group_id: number | null
   is_active: boolean
   group_name: string | null
   created_at: string
@@ -61,6 +53,19 @@ interface Group {
   name: string
 }
 
+const columnLabels = {
+  id: 'ID',
+  username: '用户名',
+  nickname: '用户昵称',
+  role: '角色',
+  creative_credits: '创作积分',
+  project_credits: '项目积分',
+  group_name: '权限组',
+  is_active: '状态',
+  created_at: '创建时间',
+  actions: '操作',
+}
+
 export default function AdminUsers() {
   const [users, setUsers] = useState<User[]>([])
   const [groups, setGroups] = useState<Group[]>([])
@@ -69,16 +74,18 @@ export default function AdminUsers() {
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [newGroupId, setNewGroupId] = useState<string>('')
-  const [newRole, setNewRole] = useState<string>('user')
   const [editUserId, setEditUserId] = useState<number | null>(null)
   const [editCreativeCredits, setEditCreativeCredits] = useState('')
   const [editProjectCredits, setEditProjectCredits] = useState('')
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [profileUserId, setProfileUserId] = useState<number | null>(null)
+  const [profileUsername, setProfileUsername] = useState('')
+  const [profileNickname, setProfileNickname] = useState('')
+  const [profileGroupId, setProfileGroupId] = useState<string>('')
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [passwordUserId, setPasswordUserId] = useState<number | null>(null)
   const [passwordUsername, setPasswordUsername] = useState('')
   const [newPasswordValue, setNewPasswordValue] = useState('')
-  const [roleConfirmOpen, setRoleConfirmOpen] = useState(false)
-  const [roleConfirmUser, setRoleConfirmUser] = useState<User | null>(null)
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -110,7 +117,6 @@ export default function AdminUsers() {
           username: newUsername,
           password: newPassword,
           group_id: newGroupId ? parseInt(newGroupId) : null,
-          role: newRole,
         },
       })
       if (res.ok) {
@@ -118,7 +124,6 @@ export default function AdminUsers() {
         setNewUsername('')
         setNewPassword('')
         setNewGroupId('')
-        setNewRole('user')
         fetchUsers()
       } else {
         const data = await res.json()
@@ -183,31 +188,37 @@ export default function AdminUsers() {
     }
   }
 
-  const handleToggleRole = async (user: User) => {
-    setRoleConfirmUser(user)
-    setRoleConfirmOpen(true)
+  const openProfileModal = (user: User) => {
+    setProfileUserId(user.id)
+    setProfileUsername(user.username)
+    setProfileNickname(user.nickname || user.username)
+    setProfileGroupId(user.group_id ? String(user.group_id) : '')
+    setProfileOpen(true)
   }
 
-  const confirmToggleRole = async () => {
-    if (!roleConfirmUser) return
-    const user = roleConfirmUser
-    const newRole = user.role === 'admin' ? 'user' : 'admin'
+  const handleUpdateProfile = async () => {
+    if (!profileUserId || !profileNickname.trim()) return
     try {
-      const res = await apiFetch(`/api/admin/users/${user.id}/role`, {
+      const res = await apiFetch(`/api/admin/users/${profileUserId}/profile`, {
         method: 'PUT',
-        body: { role: newRole },
+        body: {
+          nickname: profileNickname,
+          group_id: profileGroupId ? parseInt(profileGroupId) : null,
+        },
       })
       if (res.ok) {
+        setProfileOpen(false)
+        setProfileUserId(null)
+        setProfileUsername('')
+        setProfileNickname('')
+        setProfileGroupId('')
         fetchUsers()
       } else {
         const data = await res.json()
-        toast.error(data.error || '切换角色失败')
+        toast.error(data.error || '更新用户信息失败')
       }
     } catch {
       toast.error('网络错误')
-    } finally {
-      setRoleConfirmOpen(false)
-      setRoleConfirmUser(null)
     }
   }
 
@@ -242,6 +253,19 @@ export default function AdminUsers() {
           <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
+    },
+    {
+      accessorKey: 'nickname',
+      header: ({ column }) => (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+        >
+          用户昵称
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      ),
+      cell: ({ row }) => row.original.nickname || row.original.username,
     },
     {
       accessorKey: 'role',
@@ -346,6 +370,10 @@ export default function AdminUsers() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>操作</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => openProfileModal(user)}>
+                <UserCog className="mr-2 h-4 w-4" />
+                编辑用户
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => openEditModal(user)}>
                 <Coins className="mr-2 h-4 w-4" />
                 调整积分
@@ -353,10 +381,6 @@ export default function AdminUsers() {
               <DropdownMenuItem onClick={() => openPasswordModal(user)}>
                 <KeyRound className="mr-2 h-4 w-4" />
                 修改密码
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleToggleRole(user)}>
-                <UserCog className="mr-2 h-4 w-4" />
-                {user.role === 'admin' ? '设为普通用户' : '设为管理员'}
               </DropdownMenuItem>
               {user.role !== 'admin' && (
                 <>
@@ -395,6 +419,7 @@ export default function AdminUsers() {
             data={users}
             searchPlaceholder="搜索用户名..."
             searchColumn="username"
+            columnLabels={columnLabels}
             pageSize={10}
             toolbar={
               <Button onClick={() => setCreateOpen(true)}>
@@ -453,22 +478,7 @@ export default function AdminUsers() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">选择权限组后，用户将自动获得该组的初始积分</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="create-role">角色</Label>
-              <Select
-                value={newRole}
-                onValueChange={(value: string | null) => setNewRole(value ?? 'user')}
-              >
-                <SelectTrigger id="create-role">
-                  <SelectValue placeholder="选择角色" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="user">普通用户</SelectItem>
-                  <SelectItem value="admin">管理员</SelectItem>
-                </SelectContent>
-              </Select>
+              <p className="text-[11px] text-muted-foreground">选择权限组后，用户将自动获得该组的初始积分和角色权限</p>
             </div>
           </div>
           <DialogFooter>
@@ -477,6 +487,54 @@ export default function AdminUsers() {
             </Button>
             <Button onClick={handleCreateUser} disabled={!newUsername.trim() || !newPassword.trim()}>
               创建
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑用户</DialogTitle>
+            <DialogDescription>修改用户「{profileUsername}」的昵称和权限组。</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="profile-nickname" className="after:ml-0.5 after:text-red-500 after:content-['*']">
+                用户昵称
+              </Label>
+              <Input
+                id="profile-nickname"
+                value={profileNickname}
+                onChange={(e) => setProfileNickname(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="profile-group">权限组</Label>
+              <Select
+                value={profileGroupId || undefined}
+                onValueChange={(value: string | null) => setProfileGroupId(value || '')}
+              >
+                <SelectTrigger id="profile-group">
+                  <SelectValue placeholder="选择权限组" />
+                </SelectTrigger>
+                <SelectContent>
+                  {groups.map((g) => (
+                    <SelectItem key={g.id} value={String(g.id)}>
+                      {g.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">角色由权限组自动决定。</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProfileOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleUpdateProfile} disabled={!profileNickname.trim()}>
+              保存
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -556,21 +614,6 @@ export default function AdminUsers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <AlertDialog open={roleConfirmOpen} onOpenChange={setRoleConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认切换角色</AlertDialogTitle>
-            <AlertDialogDescription>
-              确定将用户「{roleConfirmUser?.username}」的角色切换为「{roleConfirmUser?.role === 'admin' ? '普通用户' : '管理员'}」吗？
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmToggleRole}>确认</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }

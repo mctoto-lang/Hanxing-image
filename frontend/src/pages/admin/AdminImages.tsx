@@ -119,7 +119,6 @@ const GridCard = memo(function GridCard({
 
 export default function AdminImages() {
   const [images, setImages] = useState<ImageItem[]>([])
-  const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -132,10 +131,19 @@ export default function AdminImages() {
   const [selectedUsername, setSelectedUsername] = useState<string>('')
   const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined)
   const [userSearch, setUserSearch] = useState('')
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const loadingRef = useRef(false)
+  const pageRef = useRef(1)
+  const loadedPagesRef = useRef(new Set<number>())
 
   const hasMore = images.length < total
 
   const fetchImages = useCallback(async (pageNum: number, append: boolean) => {
+    if (loadingRef.current) return
+    if (append && loadedPagesRef.current.has(pageNum)) return
+
+    loadingRef.current = true
     setLoading(true)
     try {
       const params = new URLSearchParams({ page: String(pageNum), limit: String(PAGE_SIZE) })
@@ -151,23 +159,31 @@ export default function AdminImages() {
       const data = await res.json()
       const newImages = data.images || []
       if (append) {
-        setImages((prev) => [...prev, ...newImages])
+        setImages((prev) => {
+          const seen = new Set(prev.map((item) => item.id))
+          const deduped = newImages.filter((item: ImageItem) => !seen.has(item.id))
+          return [...prev, ...deduped]
+        })
+        loadedPagesRef.current.add(pageNum)
       } else {
         setImages(newImages)
+        loadedPagesRef.current = new Set([pageNum])
       }
+      pageRef.current = pageNum
       setTotal(data.total || 0)
     } catch {
       // 非关键数据，静默失败
     } finally {
+      loadingRef.current = false
       setLoading(false)
     }
   }, [selectedUsername, dateRange])
 
   const loadMore = useCallback(() => {
-    const nextPage = page + 1
-    setPage(nextPage)
+    if (loadingRef.current || !hasMore) return
+    const nextPage = pageRef.current + 1
     fetchImages(nextPage, true)
-  }, [page, fetchImages])
+  }, [fetchImages, hasMore])
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -180,6 +196,8 @@ export default function AdminImages() {
   }, [])
 
   useEffect(() => {
+    pageRef.current = 1
+    loadedPagesRef.current.clear()
     fetchImages(1, false)
   }, [fetchImages])
 
@@ -198,16 +216,13 @@ export default function AdminImages() {
   // 筛选条件变化时重置到第 1 页
   const handleSelectUsername = (username: string) => {
     setSelectedUsername(username)
-    setPage(1)
   }
   const handleSelectDateRange = (range: DateRange | undefined) => {
     setDateRange(range)
-    setPage(1)
   }
   const clearFilters = () => {
     setSelectedUsername('')
     setDateRange(undefined)
-    setPage(1)
   }
 
   // 展开所有 result_images 为扁平列表，用于正方形缩略图
@@ -215,17 +230,16 @@ export default function AdminImages() {
     (item.result_images || []).map((url, idx) => ({ url, item, key: `${item.id}-${idx}` }))
   )
 
-  // 缩略图视图：IntersectionObserver 懒加载
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (viewMode !== 'grid' || !hasMore || loading) return
     const el = sentinelRef.current
-    if (!el) return
+    const root = scrollContainerRef.current
+    if (!el || !root) return
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) loadMore()
+        if (entry.isIntersecting && !loadingRef.current) loadMore()
       },
-      { rootMargin: '400px' }
+      { root, rootMargin: '400px 0px' }
     )
     observer.observe(el)
     return () => observer.disconnect()
@@ -360,7 +374,7 @@ export default function AdminImages() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0">
         {images.length === 0 ? (
           <p className="text-muted-foreground py-12 text-center">暂无图片</p>
         ) : viewMode === 'waterfall' ? (
@@ -377,25 +391,27 @@ export default function AdminImages() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-2">
-            {flatImages.map(({ url, item, key }) => (
-              <GridCard
-                key={key}
-                url={url}
-                item={item}
-                onPreview={openPreview}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-2">
+              {flatImages.map(({ url, item, key }) => (
+                <GridCard
+                  key={key}
+                  url={url}
+                  item={item}
+                  onPreview={openPreview}
+                />
+              ))}
+            </div>
+            {hasMore && (
+              <div ref={sentinelRef} className="flex items-center justify-center py-3 shrink-0">
+                {loading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
+              </div>
+            )}
+          </>
         )}
       </div>
 
       {/* 加载更多 / 懒加载 */}
-      {hasMore && viewMode === 'grid' && (
-        <div ref={sentinelRef} className="flex items-center justify-center py-3 shrink-0">
-          {loading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
-        </div>
-      )}
       {hasMore && viewMode === 'waterfall' && (
         <div className="flex items-center justify-center py-3 shrink-0">
           <Button

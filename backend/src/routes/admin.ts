@@ -345,7 +345,7 @@ adminRouter.get('/images', authMiddleware, adminMiddlewareRealtime, async (req: 
        JOIN users u ON t.user_id = u.id
        LEFT JOIN models m ON t.model_id = m.id
        ${whereClause}
-       ORDER BY t.created_at DESC LIMIT ? OFFSET ?`,
+       ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     const totalResult = query(

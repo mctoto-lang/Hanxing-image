@@ -129,6 +129,19 @@ const emptyForm: ModelForm = {
   jimeng_n: '1',
 }
 
+const imageModelColumnLabels = {
+  icon_url: '图标',
+  name: '名称',
+  display_name: '显示名',
+  api_endpoint: 'API 地址',
+  api_format: '接口格式',
+  cost_per_image: '积分/张',
+  max_concurrent: '最大并发',
+  is_active: '状态',
+  visibility: '可见性',
+  actions: '操作',
+}
+
 export default function AdminModels() {
   const [activeView, setActiveView] = useState<'image-models' | 'chat-apis'>('image-models')
   const [models, setModels] = useState<Model[]>([])
@@ -577,6 +590,7 @@ export default function AdminModels() {
               data={models}
               searchPlaceholder="搜索模型名称..."
               searchColumn="name"
+                    columnLabels={imageModelColumnLabels}
               pageSize={10}
               toolbar={
                 <div className="flex items-center gap-2">

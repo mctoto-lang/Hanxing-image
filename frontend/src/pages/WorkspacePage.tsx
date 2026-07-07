@@ -933,31 +933,37 @@ export default function WorkspacePage() {
         method: 'POST',
         body: { card_ids: ids },
       })
+      const data = await res.json()
       if (!res.ok) throw new Error()
-      toast.success(`已删除 ${ids.length} 张卡片`)
-      setCards(prev => prev.filter(c => !ids.includes(c.id)))
+      const deletedIds: number[] = Array.isArray(data.deleted_ids) ? data.deleted_ids : ids
+      const deletedCount = Number(data.deleted_count || deletedIds.length || 0)
+      toast.success(`已删除 ${deletedCount} 张卡片`)
+      setCards(prev => prev.filter(c => !deletedIds.includes(c.id)))
       setSelectedCardIds(new Set())
       setGeneratingImageCardIds(prev => {
         const next = new Set(prev)
-        ids.forEach(id => next.delete(id))
+        deletedIds.forEach(id => next.delete(id))
         return next
       })
       setBatchDeepeningCardIds(prev => {
         const next = new Set(prev)
-        ids.forEach(id => next.delete(id))
+        deletedIds.forEach(id => next.delete(id))
         return next
       })
       setBatchRegeneratingCardIds(prev => {
         const next = new Set(prev)
-        ids.forEach(id => next.delete(id))
+        deletedIds.forEach(id => next.delete(id))
         return next
       })
       setBatchGeneratingImageCardIds(prev => {
         const next = new Set(prev)
-        ids.forEach(id => next.delete(id))
+        deletedIds.forEach(id => next.delete(id))
         return next
       })
-      setTasks(prev => prev.map(t => t.id === activeTaskId ? { ...t, card_count: t.card_count - ids.length } : t))
+      if (activeTaskId) {
+        await fetchCards(activeTaskId)
+      }
+      await fetchTasks(1)
       void fetchQueueStatus()
     } catch {
       toast.error('批量删除失败')

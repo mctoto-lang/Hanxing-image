@@ -1,22 +1,34 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Loader2, Eye } from 'lucide-react'
-import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Delete02Icon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon } from '@/components/icons'
+import { Loader2, Eye, ImagePlus, X, Plus, Tags, FilePlus2, Pencil, Trash2, Check, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react'
+import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
+import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentMedia,
+  AttachmentTitle,
+  AttachmentTrigger,
+} from '@/components/ui/attachment'
+import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch, safeResponseJson } from '@/lib/api'
-import { uploadReferenceImages, type ReferenceUploadProgress } from '@/lib/product-reference-upload'
+import { uploadReferenceImages } from '@/lib/product-reference-upload'
 import { cn, toImageSrc } from '@/lib/utils'
 import { toast } from 'sonner'
 import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
-
-type GenerateMode = 'single' | 'template'
 
 interface ModelSizeRatio {
   ratio: string
@@ -33,37 +45,6 @@ interface Model {
   max_reference_images: number
   icon_url: string | null
   supported_sizes: { ratios: ModelSizeRatio[] } | null
-}
-
-interface MainTemplate {
-  id: number
-  name: string
-  description: string
-  visibility: 'private' | 'public'
-  user_id: number
-  username: string
-  sub_template_count: number
-  created_at: string
-}
-
-interface SubTemplate {
-  id: number
-  main_template_id: number
-  name: string
-  fixed_prompt: string
-  fixed_reference_images: string[]
-  sort_order: number
-}
-
-interface TemplateDetail extends MainTemplate {
-  sub_templates: SubTemplate[]
-}
-
-interface LibraryImage {
-  id: number
-  url: string
-  name: string
-  created_at: string
 }
 
 interface GenerationTask {
@@ -114,6 +95,20 @@ interface HistoryTaskResponse {
   created_at?: string | null
 }
 
+type RecordFilter = 'all' | 'completed' | 'failed'
+
+type RecordEntry = {
+  type: 'completed' | 'pending' | 'failed'
+  data: HistoryImage | GenerationTask
+  timestamp: number
+}
+
+type RecordSlot =
+  | { type: 'record'; record: RecordEntry; index: number }
+  | { type: 'empty'; key: string }
+
+const isRunningTaskStatus = (status: GenerationTask['status']) => status === 'pending' || status === 'processing' || status === 'queued'
+
 interface CanvasImage {
   id: string
   url: string
@@ -125,6 +120,53 @@ interface CanvasImage {
 }
 
 type CanvasMode = 'single' | 'multi'
+
+interface ReferenceImageItem {
+  id: string
+  url: string | null
+  name: string
+  typeLabel: string
+  sizeLabel: string
+  status: 'uploading' | 'done'
+  progress: number
+}
+
+interface ProductMainTemplate {
+  id: number
+  group_id?: number | null
+  group_name?: string | null
+  group_badge_color?: TemplateGroupColor | null
+  name: string
+  description?: string | null
+  visibility?: 'private' | 'public'
+  username?: string | null
+  sub_template_count?: number
+  sub_templates?: ProductSubTemplate[]
+}
+
+type TemplateGroupColor = 'slate' | 'red' | 'orange' | 'amber' | 'yellow' | 'lime' | 'green' | 'emerald' | 'teal' | 'cyan' | 'sky' | 'blue' | 'indigo' | 'violet' | 'purple' | 'fuchsia' | 'pink' | 'rose'
+
+interface ProductTemplateGroup {
+  id: number
+  user_id?: number
+  name: string
+  badge_color: TemplateGroupColor
+}
+
+type NewTemplateGroupMode = 'existing' | 'new'
+
+interface ProductSubTemplate {
+  id: number
+  main_template_id: number
+  main_template_name?: string
+  name: string
+  fixed_prompt: string
+  fixed_reference_images?: string[] | string | null
+  preview_image_url?: string | null
+  sort_order?: number
+}
+
+type LoadedTemplateMap = Record<number, ProductMainTemplate>
 
 function isJsonResponse(res: Response) {
   return (res.headers.get('content-type') || '').includes('application/json')
@@ -188,43 +230,111 @@ function toTimestamp(value?: string | null) {
   return Number.isFinite(parsed) ? parsed : Date.now()
 }
 
+const templateGroupColorOptions: { value: TemplateGroupColor; label: string; className: string; dotClassName: string }[] = [
+  { value: 'slate', label: '岩灰', className: 'border-slate-200 bg-slate-50 text-slate-700', dotClassName: 'bg-slate-500' },
+  { value: 'red', label: '玫红', className: 'border-red-200 bg-red-50 text-red-700', dotClassName: 'bg-red-500' },
+  { value: 'orange', label: '橙色', className: 'border-orange-200 bg-orange-50 text-orange-700', dotClassName: 'bg-orange-500' },
+  { value: 'amber', label: '琥珀', className: 'border-amber-200 bg-amber-50 text-amber-700', dotClassName: 'bg-amber-500' },
+  { value: 'green', label: '绿色', className: 'border-green-200 bg-green-50 text-green-700', dotClassName: 'bg-green-500' },
+  { value: 'teal', label: '青绿', className: 'border-teal-200 bg-teal-50 text-teal-700', dotClassName: 'bg-teal-500' },
+  { value: 'blue', label: '蓝色', className: 'border-blue-200 bg-blue-50 text-blue-700', dotClassName: 'bg-blue-500' },
+  { value: 'violet', label: '紫色', className: 'border-violet-200 bg-violet-50 text-violet-700', dotClassName: 'bg-violet-500' },
+  { value: 'pink', label: '粉色', className: 'border-pink-200 bg-pink-50 text-pink-700', dotClassName: 'bg-pink-500' },
+]
+
+const templateGroupColorClassMap = templateGroupColorOptions.reduce<Record<string, string>>((acc, item) => {
+  acc[item.value] = item.className
+  return acc
+}, {})
+
+function getTemplateGroupBadgeClass(color?: string | null) {
+  return templateGroupColorClassMap[color || ''] || templateGroupColorClassMap.slate
+}
+
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return '0 B'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size >= 100 * 1024 ? 0 : 1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`
+}
+
+function getFileTypeLabel(name: string, file?: File) {
+  const fromType = file?.type?.split('/').pop()?.toUpperCase()
+  if (fromType) return fromType
+  const ext = name.split('.').pop()?.toUpperCase()
+  return ext || 'IMG'
+}
+
+function buildUploadingReferenceItem(file: File, index: number): ReferenceImageItem {
+  return {
+    id: `uploading-${file.name}-${file.lastModified}-${index}`,
+    url: null,
+    name: file.name,
+    typeLabel: getFileTypeLabel(file.name, file),
+    sizeLabel: formatFileSize(file.size),
+    status: 'uploading',
+    progress: 0,
+  }
+}
+
 export default function ProductImagePage() {
   const [models, setModels] = useState<Model[]>([])
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [userCredits, setUserCredits] = useState(0)
 
-  // 模式：单张生成 / 模板生成
-  const [mode, setMode] = useState<GenerateMode>('single')
-
-  const [referenceImages, setReferenceImages] = useState<string[]>([])
+  const [referenceImages, setReferenceImages] = useState<ReferenceImageItem[]>([])
   const [prompt, setPrompt] = useState('')
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
 
   // 模板相关
-  const [mainTemplates, setMainTemplates] = useState<MainTemplate[]>([])
-  const [selectedMainTemplateId, setSelectedMainTemplateId] = useState<number | null>(null)
-  const [selectedTemplateDetail, setSelectedTemplateDetail] = useState<TemplateDetail | null>(null)
-  const [selectedSubTemplateIds, setSelectedSubTemplateIds] = useState<number[]>([])
-
-  // 模板库相关（单张模式使用）
-  const [libraryImages, setLibraryImages] = useState<LibraryImage[]>([])
-  const [selectedLibraryImageId, setSelectedLibraryImageId] = useState<number | null>(null)
-  const [uploadingLibrary, setUploadingLibrary] = useState(false)
-  const libraryFileRef = useRef<HTMLInputElement>(null)
-
   const [showTemplateDialog, setShowTemplateDialog] = useState(false)
+  const [templates, setTemplates] = useState<ProductMainTemplate[]>([])
+  const [templateGroups, setTemplateGroups] = useState<ProductTemplateGroup[]>([])
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+  const [templateSearch, setTemplateSearch] = useState('')
+  const [templateGroupFilter, setTemplateGroupFilter] = useState('all')
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
+  const [loadedTemplateDetails, setLoadedTemplateDetails] = useState<LoadedTemplateMap>({})
+  const [templateSelectedSubTemplateIds, setTemplateSelectedSubTemplateIds] = useState<Set<number>>(new Set())
+  const [appliedTemplateSubTemplates, setAppliedTemplateSubTemplates] = useState<ProductSubTemplate[]>([])
+  const [appliedTemplatePrompts, setAppliedTemplatePrompts] = useState<Record<number, string>>({})
+  const [activeAppliedTemplateIndex, setActiveAppliedTemplateIndex] = useState(0)
+  const [showCreateTemplateDialog, setShowCreateTemplateDialog] = useState(false)
+  const [showCreateSubTemplateDialog, setShowCreateSubTemplateDialog] = useState(false)
+  const [newTemplateName, setNewTemplateName] = useState('')
+  const [newTemplateDescription, setNewTemplateDescription] = useState('')
+  const [newTemplateVisibility, setNewTemplateVisibility] = useState<'private' | 'public'>('private')
+  const [newTemplateGroupMode, setNewTemplateGroupMode] = useState<NewTemplateGroupMode>('existing')
+  const [newTemplateGroupId, setNewTemplateGroupId] = useState('')
+  const [newTemplateGroupName, setNewTemplateGroupName] = useState('')
+  const [newTemplateGroupColor, setNewTemplateGroupColor] = useState<TemplateGroupColor>('slate')
+  const [editingTemplate, setEditingTemplate] = useState<ProductMainTemplate | null>(null)
+  const [deletingTemplate, setDeletingTemplate] = useState<ProductMainTemplate | null>(null)
+  const [creatingTemplate, setCreatingTemplate] = useState(false)
+  const [newSubTemplateName, setNewSubTemplateName] = useState('')
+  const [newSubTemplatePrompt, setNewSubTemplatePrompt] = useState('')
+  const [newSubTemplatePreviewImageUrl, setNewSubTemplatePreviewImageUrl] = useState<string | null>(null)
+  const [newSubTemplateSortOrder, setNewSubTemplateSortOrder] = useState('0')
+  const [editingSubTemplate, setEditingSubTemplate] = useState<ProductSubTemplate | null>(null)
+  const [deletingSubTemplate, setDeletingSubTemplate] = useState<ProductSubTemplate | null>(null)
+  const [uploadingSubTemplatePreview, setUploadingSubTemplatePreview] = useState(false)
+  const [subTemplatePreviewUploadProgress, setSubTemplatePreviewUploadProgress] = useState(0)
+  const [creatingSubTemplate, setCreatingSubTemplate] = useState(false)
 
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const [generating, setGenerating] = useState(false)
   const [uploadingReference, setUploadingReference] = useState(false)
-  const [referenceUploadProgress, setReferenceUploadProgress] = useState<ReferenceUploadProgress>({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
+  const [historyLoading, setHistoryLoading] = useState(true)
 
   const [selectedHistoryImages, setSelectedHistoryImages] = useState<Set<string>>(new Set())
   const [historyImages, setHistoryImages] = useState<HistoryImage[]>([])
   const prevImageCount = useRef(0)
+  const historyInitializedRef = useRef(false)
+  const autoCanvasTaskIdsRef = useRef<Set<number>>(new Set())
   const pollCleanupFns = useRef<Set<() => void>>(new Set())
+  const uploadInputRef = useRef<HTMLInputElement>(null)
 
   // 自由画布
   const [canvasImages, setCanvasImages] = useState<CanvasImage[]>([])
@@ -269,11 +379,12 @@ export default function ProductImagePage() {
   }>({ isScaling: false, imageId: null, startClientX: 0, startClientY: 0, startScale: 1, centerX: 0, centerY: 0 })
 
   const selectedModel = models.find(m => m.id === selectedModelId)
-  const isTemplateMode = mode === 'template'
-  const selectedLibraryImage = libraryImages.find(img => img.id === selectedLibraryImageId) || null
-  const singleCost = (selectedModel?.cost_per_image || 0) * count
-  const templateCost = (selectedModel?.cost_per_image || 0) * selectedSubTemplateIds.length
-  const cost = isTemplateMode ? templateCost : singleCost
+  const hasAppliedTemplates = appliedTemplateSubTemplates.length > 0
+  const activeAppliedTemplate = hasAppliedTemplates ? appliedTemplateSubTemplates[Math.min(activeAppliedTemplateIndex, appliedTemplateSubTemplates.length - 1)] : null
+  const activeAppliedTemplatePrompt = activeAppliedTemplate ? appliedTemplatePrompts[activeAppliedTemplate.id] ?? activeAppliedTemplate.fixed_prompt ?? '' : prompt
+  const effectiveCount = hasAppliedTemplates ? appliedTemplateSubTemplates.length : count
+  const singleCost = (selectedModel?.cost_per_image || 0) * effectiveCount
+  const cost = singleCost
   const modelOptions = useMemo(() => models.map(model => ({
     value: String(model.id),
     label: model.display_name || model.name,
@@ -303,18 +414,18 @@ export default function ProductImagePage() {
     const matched = availableSizes.find(s => `${s.width}x${s.height}` === size)
     if (!matched) setSize(`${availableSizes[0].width}x${availableSizes[0].height}`)
   }, [availableSizes, size])
+  const uploadedReferenceImages = useMemo(
+    () => referenceImages.filter((item) => item.status === 'done' && item.url),
+    [referenceImages]
+  )
   const canUploadMore = referenceImages.length < (selectedModel?.max_reference_images || 5)
-  const activeCount = tasks.filter(t => t.status === 'pending' || t.status === 'processing').length
-  const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'processing')
+  const activeCount = tasks.filter(t => isRunningTaskStatus(t.status)).length
+  const pendingTasks = tasks.filter(t => isRunningTaskStatus(t.status))
   const failedTasks = tasks.filter(t => t.status === 'failed')
 
   // 生成记录：合并所有类型的记录（已完成、进行中、失败）
   const allRecords = useMemo(() => {
-    const records: Array<{
-      type: 'completed' | 'pending' | 'failed'
-      data: HistoryImage | GenerationTask
-      timestamp: number
-    }> = []
+    const records: RecordEntry[] = []
     
     // 已完成的图片
     historyImages.forEach(img => {
@@ -342,10 +453,75 @@ export default function ProductImagePage() {
   }, [historyImages, pendingTasks, failedTasks])
 
   // 记录分页
+  const [recordFilter, setRecordFilter] = useState<RecordFilter>('all')
   const [recordPage, setRecordPage] = useState(0)
-  const recordsPerPage = 10
-  const totalRecordPages = Math.ceil(allRecords.length / recordsPerPage)
-  const currentPageRecords = allRecords.slice(recordPage * recordsPerPage, (recordPage + 1) * recordsPerPage)
+  const filteredRecords = useMemo(() => {
+    if (recordFilter === 'completed') return allRecords.filter(record => record.type === 'completed')
+    if (recordFilter === 'failed') return allRecords.filter(record => record.type === 'failed')
+    return allRecords
+  }, [allRecords, recordFilter])
+  const recordsPerPage = 8
+  const totalRecordPages = Math.ceil(filteredRecords.length / recordsPerPage)
+  const currentPageRecords = filteredRecords.slice(recordPage * recordsPerPage, (recordPage + 1) * recordsPerPage)
+  const nextPageRecords = filteredRecords.slice((recordPage + 1) * recordsPerPage, (recordPage + 2) * recordsPerPage)
+  const recordThumbnailUrls = useMemo(
+    () => currentPageRecords
+      .filter((record): record is RecordEntry & { type: 'completed'; data: HistoryImage } => record.type === 'completed')
+      .map(record => toImageSrc(record.data.url, { width: 176, height: 176 })),
+    [currentPageRecords]
+  )
+  const nextPageThumbnailUrls = useMemo(
+    () => nextPageRecords
+      .filter((record): record is RecordEntry & { type: 'completed'; data: HistoryImage } => record.type === 'completed')
+      .map(record => toImageSrc(record.data.url, { width: 176, height: 176 })),
+    [nextPageRecords]
+  )
+  const recordSlots = useMemo<RecordSlot[]>(() => {
+    const slots: RecordSlot[] = []
+
+    currentPageRecords.forEach((record, index) => {
+      slots.push({ type: 'record', record, index })
+    })
+
+    while (slots.length < recordsPerPage) {
+      slots.push({ type: 'empty', key: `empty-${slots.length}` })
+    }
+
+    return slots
+  }, [currentPageRecords, recordsPerPage])
+
+  useEffect(() => {
+    setRecordPage(0)
+  }, [recordFilter])
+
+  useEffect(() => {
+    if (totalRecordPages === 0) {
+      if (recordPage !== 0) setRecordPage(0)
+      return
+    }
+    if (recordPage > totalRecordPages - 1) {
+      setRecordPage(totalRecordPages - 1)
+    }
+  }, [recordPage, totalRecordPages])
+
+  useEffect(() => {
+    const urls = [...recordThumbnailUrls, ...nextPageThumbnailUrls]
+    if (urls.length === 0) return
+
+    const images = urls.map((url) => {
+      const image = new Image()
+      image.decoding = 'async'
+      image.src = url
+      return image
+    })
+
+    return () => {
+      images.forEach((image) => {
+        image.onload = null
+        image.onerror = null
+      })
+    }
+  }, [nextPageThumbnailUrls, recordThumbnailUrls])
 
   useEffect(() => {
     const fetchModels = async () => {
@@ -375,9 +551,13 @@ export default function ProductImagePage() {
 
   useEffect(() => {
     const fetchProductHistory = async () => {
+      setHistoryLoading(true)
       try {
         const res = await apiFetch('/api/tasks/history?limit=20&source=product')
-        if (!res.ok) return
+        if (!res.ok) {
+          setTasks([])
+          return
+        }
         const data = await safeResponseJson(res)
         const taskList = Array.isArray(data.tasks) ? data.tasks as HistoryTaskResponse[] : []
         const normalizedTasks: GenerationTask[] = taskList.map((task) => ({
@@ -396,7 +576,7 @@ export default function ProductImagePage() {
         }))
 
         const pendingTaskIds = normalizedTasks
-          .filter(task => task.status === 'pending' || task.status === 'processing' || task.status === 'queued')
+          .filter(task => isRunningTaskStatus(task.status))
           .map(task => task.id)
 
         if (pendingTaskIds.length === 0) {
@@ -424,13 +604,17 @@ export default function ProductImagePage() {
         setTasks(mergedTasks)
 
         const stillPendingTaskIds = mergedTasks
-          .filter(task => task.status === 'pending' || task.status === 'processing' || task.status === 'queued')
+          .filter(task => isRunningTaskStatus(task.status))
           .map(task => task.id)
 
         if (stillPendingTaskIds.length > 0) {
           pollTasks(stillPendingTaskIds, { appendInitialTasks: false })
         }
-      } catch {}
+      } catch {
+        setTasks([])
+      } finally {
+        setHistoryLoading(false)
+      }
     }
 
     fetchProductHistory()
@@ -445,64 +629,6 @@ export default function ProductImagePage() {
       pollCleanupFns.current.clear()
     }
   }, [])
-
-  useEffect(() => {
-    const fetchTemplates = async () => {
-      try {
-        const res = await apiFetch('/api/product/templates')
-        if (res.status === 404) { setMainTemplates([]); return }
-        if (!res.ok) throw new Error(`加载模板失败 (${res.status})`)
-        if (!isJsonResponse(res)) throw new Error('模板接口暂不可用')
-        const data = await res.json()
-        setMainTemplates(getArrayData<MainTemplate>(data))
-      } catch {
-        setMainTemplates([])
-      }
-    }
-    fetchTemplates()
-  }, [])
-
-  // 加载模板库图片
-  const fetchLibraryImages = async () => {
-    try {
-      const res = await apiFetch('/api/product/library-images')
-      if (!res.ok) return
-      const data = await res.json()
-      setLibraryImages(getArrayData<LibraryImage>(data))
-    } catch {
-      setLibraryImages([])
-    }
-  }
-
-  useEffect(() => {
-    fetchLibraryImages()
-  }, [])
-
-  useEffect(() => {
-    if (!selectedMainTemplateId) {
-      setSelectedTemplateDetail(null)
-      return
-    }
-    const fetchTemplateDetail = async () => {
-      try {
-        const res = await apiFetch(`/api/product/templates/${selectedMainTemplateId}`)
-        if (res.status === 404) {
-          setSelectedTemplateDetail(null)
-          setSelectedSubTemplateIds([])
-          return
-        }
-        if (!res.ok) throw new Error(`加载模板详情失败 (${res.status})`)
-        if (!isJsonResponse(res)) throw new Error('模板详情接口暂不可用')
-        const data = await res.json()
-        setSelectedTemplateDetail(data)
-        setSelectedSubTemplateIds([])
-      } catch {
-        setSelectedTemplateDetail(null)
-        setSelectedSubTemplateIds([])
-      }
-    }
-    fetchTemplateDetail()
-  }, [selectedMainTemplateId])
 
   // 把图片加入画布（single 模式替换，multi 模式追加并轻微错位）
   const addImageToCanvas = useCallback((url: string, modeOverride?: CanvasMode) => {
@@ -560,28 +686,27 @@ export default function ProductImagePage() {
 
   // 点击历史记录图片：切换选中状态，同步到画布
   const handleHistoryClick = useCallback((url: string) => {
+    const shouldSelect = !selectedHistoryImages.has(url)
     setSelectedHistoryImages(prev => {
       const newSet = new Set(prev)
       if (newSet.has(url)) {
-        // 取消选中：从 set 和画布中移除
         newSet.delete(url)
-        setCanvasImages(prev => prev.filter(img => img.url !== url))
       } else {
-        // 选中：加入 set 和画布
         if (canvasMode === 'single') {
-          // 单图模式：清空之前的选中
           newSet.clear()
           newSet.add(url)
-          addImageToCanvas(url, 'single')
         } else {
-          // 多图模式：追加
           newSet.add(url)
-          addImageToCanvas(url, 'multi')
         }
       }
       return newSet
     })
-  }, [canvasMode, addImageToCanvas])
+    if (shouldSelect) {
+      addImageToCanvas(url, canvasMode === 'single' ? 'single' : 'multi')
+    } else {
+      setCanvasImages(prev => prev.filter(img => img.url !== url))
+    }
+  }, [canvasMode, addImageToCanvas, selectedHistoryImages])
 
   // 重置画布视图：清空画布、清空选中、重置缩放
   const handleResetCanvas = useCallback(() => {
@@ -802,9 +927,17 @@ export default function ProductImagePage() {
       }))
     )
     setHistoryImages(images)
-    if (images.length > prevImageCount.current) {
-      const newImg = images[images.length - 1]
-      // 新生成的图片自动选中并加入画布
+    if (!historyInitializedRef.current) {
+      historyInitializedRef.current = true
+      prevImageCount.current = images.length
+      return
+    }
+    const autoCanvasTaskIds = autoCanvasTaskIdsRef.current
+    const newAutoImages = images
+      .filter(img => autoCanvasTaskIds.has(img.taskId))
+      .sort((a, b) => b.timestamp - a.timestamp)
+    if (newAutoImages.length > 0) {
+      const newImg = newAutoImages[0]
       setSelectedHistoryImages(prev => {
         const newSet = new Set(prev)
         if (canvasMode === 'single') {
@@ -814,7 +947,7 @@ export default function ProductImagePage() {
         return newSet
       })
       addImageToCanvas(newImg.url)
-      // 有新记录时跳转到第一页
+      autoCanvasTaskIds.delete(newImg.taskId)
       setRecordPage(0)
     }
     prevImageCount.current = images.length
@@ -828,14 +961,424 @@ export default function ProductImagePage() {
     }
   }, [canvasImages])
 
-  // 模式切换：清空模板相关选择
-  const handleModeChange = (newMode: GenerateMode) => {
-    if (newMode === mode) return
-    setMode(newMode)
-    setSelectedMainTemplateId(null)
-    setSelectedSubTemplateIds([])
-    setSelectedTemplateDetail(null)
-    setSelectedLibraryImageId(null)
+  const normalizeSubTemplate = (item: ProductSubTemplate, template: ProductMainTemplate): ProductSubTemplate => ({
+    ...item,
+    main_template_id: item.main_template_id || template.id,
+    main_template_name: item.main_template_name || template.name,
+    fixed_reference_images: parseJsonArray(item.fixed_reference_images),
+  })
+
+  const loadTemplateGroups = async () => {
+    const res = await apiFetch('/api/product/template-groups')
+    const data = await safeResponseJson(res)
+    if (!res.ok) throw new Error((data.error as string) || '加载模板分组失败')
+    const groups = getArrayData<ProductTemplateGroup>(data)
+    setTemplateGroups(groups)
+    if (!newTemplateGroupId && groups.length > 0) setNewTemplateGroupId(String(groups[0].id))
+    return groups
+  }
+
+  const loadTemplates = async () => {
+    if (templates.length > 0 || loadingTemplates) return
+    setLoadingTemplates(true)
+    try {
+      const [groupResult, templateResult] = await Promise.all([
+        apiFetch('/api/product/template-groups'),
+        apiFetch('/api/product/templates'),
+      ])
+      const groupData = await safeResponseJson(groupResult)
+      if (!groupResult.ok) throw new Error((groupData.error as string) || '加载模板分组失败')
+      const groups = getArrayData<ProductTemplateGroup>(groupData)
+      setTemplateGroups(groups)
+      if (!newTemplateGroupId && groups.length > 0) setNewTemplateGroupId(String(groups[0].id))
+      const res = templateResult
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || '加载模板失败')
+      const templateList = getArrayData<ProductMainTemplate>(data)
+      setTemplates(templateList)
+      if (!selectedTemplateId && templateList.length > 0) {
+        await selectTemplate(templateList[0].id, templateList)
+      }
+    } catch (error: any) {
+      toast.error(error.message || '加载模板失败')
+    } finally {
+      setLoadingTemplates(false)
+    }
+  }
+
+  const reloadTemplates = async () => {
+    setLoadingTemplates(true)
+    try {
+      const [groups, res] = await Promise.all([
+        loadTemplateGroups(),
+        apiFetch('/api/product/templates'),
+      ])
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || '加载模板失败')
+      const templateList = getArrayData<ProductMainTemplate>(data)
+      if (!newTemplateGroupId && groups.length > 0) setNewTemplateGroupId(String(groups[0].id))
+      setTemplates(templateList)
+      return templateList
+    } finally {
+      setLoadingTemplates(false)
+    }
+  }
+
+  const fetchTemplateDetail = async (templateId: number, templateList = templates) => {
+    const cached = loadedTemplateDetails[templateId]
+    if (cached) return cached
+    const res = await apiFetch(`/api/product/templates/${templateId}`)
+    const data = await safeResponseJson(res)
+    if (!res.ok) throw new Error((data.error as string) || '加载模板详情失败')
+    const detail = data as unknown as ProductMainTemplate
+    const baseTemplate = templateList.find(item => item.id === templateId) || detail
+    const normalized: ProductMainTemplate = {
+      ...baseTemplate,
+      ...detail,
+      sub_templates: Array.isArray(detail.sub_templates)
+        ? detail.sub_templates.map(item => normalizeSubTemplate(item, { ...baseTemplate, ...detail }))
+        : [],
+    }
+    setLoadedTemplateDetails(prev => ({ ...prev, [templateId]: normalized }))
+    return normalized
+  }
+
+  const selectTemplate = async (templateId: number, templateList = templates) => {
+    setSelectedTemplateId(templateId)
+    try {
+      await fetchTemplateDetail(templateId, templateList)
+    } catch (error: any) {
+      toast.error(error.message || '加载模板详情失败')
+    }
+  }
+
+  const handleCreateSubTemplateClick = () => {
+    if (!selectedTemplateId) { toast.error('请先选择一个主模板'); return }
+    setEditingSubTemplate(null)
+    setNewSubTemplateName('')
+    setNewSubTemplatePrompt('')
+    setNewSubTemplatePreviewImageUrl(null)
+    setNewSubTemplateSortOrder(String(currentSubTemplates.length))
+    setShowCreateSubTemplateDialog(true)
+  }
+
+  const handleEditSubTemplateClick = (subTemplate: ProductSubTemplate) => {
+    setEditingSubTemplate(subTemplate)
+    setNewSubTemplateName(subTemplate.name)
+    setNewSubTemplatePrompt(subTemplate.fixed_prompt)
+    setNewSubTemplatePreviewImageUrl(subTemplate.preview_image_url || getSubTemplatePreviewImage(subTemplate))
+    setNewSubTemplateSortOrder(String(subTemplate.sort_order ?? 0))
+    setShowCreateSubTemplateDialog(true)
+  }
+
+  const handleCancelCreateSubTemplate = () => {
+    setNewSubTemplateName('')
+    setNewSubTemplatePrompt('')
+    setNewSubTemplatePreviewImageUrl(null)
+    setNewSubTemplateSortOrder('0')
+    setEditingSubTemplate(null)
+    setUploadingSubTemplatePreview(false)
+    setSubTemplatePreviewUploadProgress(0)
+    setShowCreateSubTemplateDialog(false)
+  }
+
+  const updateSubTemplateInState = (subTemplate: ProductSubTemplate) => {
+    setLoadedTemplateDetails(prev => {
+      const template = prev[subTemplate.main_template_id]
+      if (!template) return prev
+      return {
+        ...prev,
+        [subTemplate.main_template_id]: {
+          ...template,
+          sub_templates: (template.sub_templates || []).map(item => item.id === subTemplate.id ? subTemplate : item),
+        },
+      }
+    })
+    setAppliedTemplateSubTemplates(prev => prev.map(item => item.id === subTemplate.id ? subTemplate : item))
+    setAppliedTemplatePrompts(prev => prev[subTemplate.id] === undefined ? prev : { ...prev, [subTemplate.id]: prev[subTemplate.id] })
+  }
+
+  const removeSubTemplateFromState = (subTemplate: ProductSubTemplate) => {
+    setLoadedTemplateDetails(prev => {
+      const template = prev[subTemplate.main_template_id]
+      if (!template) return prev
+      const nextSubTemplates = (template.sub_templates || []).filter(item => item.id !== subTemplate.id)
+      return {
+        ...prev,
+        [subTemplate.main_template_id]: {
+          ...template,
+          sub_template_count: Math.max((template.sub_template_count || template.sub_templates?.length || 1) - 1, 0),
+          sub_templates: nextSubTemplates,
+        },
+      }
+    })
+    setTemplates(prev => prev.map(item => item.id === subTemplate.main_template_id ? { ...item, sub_template_count: Math.max((item.sub_template_count || 1) - 1, 0) } : item))
+    setTemplateSelectedSubTemplateIds(prev => {
+      const next = new Set(prev)
+      next.delete(subTemplate.id)
+      return next
+    })
+    setAppliedTemplateSubTemplates(prev => prev.filter(item => item.id !== subTemplate.id))
+    setAppliedTemplatePrompts(prev => {
+      const next = { ...prev }
+      delete next[subTemplate.id]
+      return next
+    })
+    setActiveAppliedTemplateIndex(prev => Math.max(prev - 1, 0))
+  }
+
+  const handleTemplateDialogOpenChange = (open: boolean) => {
+    setShowTemplateDialog(open)
+    if (open) void loadTemplates()
+  }
+
+  const selectedSubTemplates = useMemo(() => {
+    const selectedIds = templateSelectedSubTemplateIds
+    return Object.values(loadedTemplateDetails)
+      .flatMap(template => template.sub_templates || [])
+      .filter(item => selectedIds.has(item.id))
+      .sort((a, b) => a.id - b.id)
+  }, [loadedTemplateDetails, templateSelectedSubTemplateIds])
+
+  const getAllSelectedTemplateSubTemplates = () => {
+    return selectedSubTemplates
+  }
+
+  useEffect(() => {
+    if (!showTemplateDialog || templates.length === 0 || templateSelectedSubTemplateIds.size === 0) return
+    if (selectedSubTemplates.length === templateSelectedSubTemplateIds.size) return
+    const missingTemplateIds = templates
+      .filter(template => !loadedTemplateDetails[template.id])
+      .map(template => template.id)
+
+    if (missingTemplateIds.length === 0) return
+
+    void Promise.allSettled(missingTemplateIds.map(templateId => fetchTemplateDetail(templateId, templates)))
+  }, [loadedTemplateDetails, selectedSubTemplates, showTemplateDialog, templateSelectedSubTemplateIds, templates])
+
+  const handleToggleSubTemplate = (subTemplate: ProductSubTemplate, checked: boolean) => {
+    setTemplateSelectedSubTemplateIds(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(subTemplate.id)
+      else next.delete(subTemplate.id)
+      return next
+    })
+  }
+
+  const applySubTemplates = (selected: ProductSubTemplate[], successMessage: string) => {
+    if (selected.length === 0) { toast.error('请至少选择一个小模板'); return }
+    setAppliedTemplateSubTemplates(selected)
+    setAppliedTemplatePrompts(Object.fromEntries(selected.map(item => [item.id, item.fixed_prompt || ''])))
+    setActiveAppliedTemplateIndex(0)
+    setCount(selected.length)
+    setShowTemplateDialog(false)
+    toast.success(successMessage)
+  }
+
+  const handleApplyTemplateSelection = () => {
+    applySubTemplates(getAllSelectedTemplateSubTemplates(), `已应用 ${templateSelectedSubTemplateIds.size} 个小模板`)
+  }
+
+  const handleApplyCurrentTemplate = () => {
+    if (!currentTemplate) { toast.error('请先选择一个主模板'); return }
+    if (currentSubTemplates.length === 0) { toast.error('当前大模板暂无小模板'); return }
+    setTemplateSelectedSubTemplateIds(new Set(currentSubTemplates.map(item => item.id)))
+    applySubTemplates(currentSubTemplates, `已应用大模板“${currentTemplate.name}”下的 ${currentSubTemplates.length} 个小模板`)
+  }
+
+  const resetTemplateForm = () => {
+    setNewTemplateName('')
+    setNewTemplateDescription('')
+    setNewTemplateVisibility('private')
+    setNewTemplateGroupMode('existing')
+    setNewTemplateGroupName('')
+    setNewTemplateGroupColor('slate')
+    setEditingTemplate(null)
+  }
+
+  const handleCreateTemplateClick = () => {
+    resetTemplateForm()
+    setShowCreateTemplateDialog(true)
+  }
+
+  const handleEditTemplateClick = () => {
+    if (!currentTemplate) { toast.error('请先选择一个主模板'); return }
+    setEditingTemplate(currentTemplate)
+    setNewTemplateName(currentTemplate.name)
+    setNewTemplateDescription(currentTemplate.description || '')
+    setNewTemplateVisibility(currentTemplate.visibility || 'private')
+    setNewTemplateGroupMode('existing')
+    setNewTemplateGroupId(currentTemplate.group_id ? String(currentTemplate.group_id) : newTemplateGroupId)
+    setNewTemplateGroupName('')
+    setNewTemplateGroupColor('slate')
+    setShowCreateTemplateDialog(true)
+  }
+
+  const handleSaveTemplate = async () => {
+    const name = newTemplateName.trim()
+    if (!name) { toast.error('请输入模板名称'); return }
+    let groupId = newTemplateGroupMode === 'existing' ? Number(newTemplateGroupId) : 0
+    const groupName = newTemplateGroupName.trim()
+    if (newTemplateGroupMode === 'existing' && (!Number.isInteger(groupId) || groupId <= 0)) { toast.error('请选择模板分组'); return }
+    if (newTemplateGroupMode === 'new' && !groupName) { toast.error('请输入分组名称'); return }
+    setCreatingTemplate(true)
+    try {
+      if (newTemplateGroupMode === 'new') {
+        const groupRes = await apiFetch('/api/product/template-groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: groupName, badge_color: newTemplateGroupColor }),
+        })
+        const groupData = await safeResponseJson(groupRes)
+        if (!groupRes.ok) throw new Error((groupData.error as string) || '创建分组失败')
+        const group = groupData as unknown as ProductTemplateGroup
+        setTemplateGroups(prev => [...prev, group])
+        setNewTemplateGroupId(String(group.id))
+        groupId = group.id
+      }
+      const res = await apiFetch(editingTemplate ? `/api/product/templates/${editingTemplate.id}` : '/api/product/templates', {
+        method: editingTemplate ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          description: newTemplateDescription.trim(),
+          visibility: newTemplateVisibility,
+          group_id: groupId,
+        }),
+      })
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || (editingTemplate ? '修改模板失败' : '创建模板失败'))
+      const savedRaw = data as unknown as ProductMainTemplate
+      const wasEditing = Boolean(editingTemplate)
+      const previousDetail = editingTemplate ? loadedTemplateDetails[editingTemplate.id] : undefined
+      const saved: ProductMainTemplate = {
+        ...savedRaw,
+        sub_templates: previousDetail?.sub_templates || [],
+      }
+      resetTemplateForm()
+      const templateList = await reloadTemplates()
+      setLoadedTemplateDetails(prev => ({ ...prev, [saved.id]: saved }))
+      await selectTemplate(saved.id, templateList)
+      setShowCreateTemplateDialog(false)
+      toast.success(wasEditing ? '模板修改成功' : '模板创建成功')
+    } catch (error: any) {
+      toast.error(error.message || (editingTemplate ? '修改模板失败' : '创建模板失败'))
+    } finally {
+      setCreatingTemplate(false)
+    }
+  }
+
+  const handleDeleteTemplate = async () => {
+    if (!deletingTemplate) return
+    try {
+      const res = await apiFetch(`/api/product/templates/${deletingTemplate.id}`, { method: 'DELETE' })
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || '删除模板失败')
+      setTemplates(prev => prev.filter(item => item.id !== deletingTemplate.id))
+      setLoadedTemplateDetails(prev => {
+        const next = { ...prev }
+        delete next[deletingTemplate.id]
+        return next
+      })
+      const deletedSubTemplates = loadedTemplateDetails[deletingTemplate.id]?.sub_templates || deletingTemplate.sub_templates || []
+      setTemplateSelectedSubTemplateIds(prev => {
+        const deletedIds = new Set(deletedSubTemplates.map(item => item.id))
+        const next = new Set(prev)
+        deletedIds.forEach(id => next.delete(id))
+        return next
+      })
+      setAppliedTemplateSubTemplates(prev => prev.filter(item => item.main_template_id !== deletingTemplate.id))
+      setAppliedTemplatePrompts(prev => {
+        const next = { ...prev }
+        deletedSubTemplates.forEach(item => delete next[item.id])
+        return next
+      })
+      setActiveAppliedTemplateIndex(0)
+      setSelectedTemplateId(prev => prev === deletingTemplate.id ? null : prev)
+      setDeletingTemplate(null)
+      toast.success('模板已删除')
+    } catch (error: any) {
+      toast.error(error.message || '删除模板失败')
+    }
+  }
+
+  const handleSaveSubTemplate = async () => {
+    if (!selectedTemplateId || !currentTemplate) { toast.error('请先选择一个主模板'); return }
+    const name = newSubTemplateName.trim()
+    const fixedPrompt = newSubTemplatePrompt.trim()
+    const sortOrder = Number(newSubTemplateSortOrder)
+    if (!name) { toast.error('请输入小模板名称'); return }
+    if (!fixedPrompt) { toast.error('请输入固定提示词'); return }
+    if (!Number.isFinite(sortOrder)) { toast.error('请输入有效排序'); return }
+    setCreatingSubTemplate(true)
+    try {
+      const body = {
+        name,
+        fixed_prompt: fixedPrompt,
+        fixed_reference_images: [],
+        preview_image_url: newSubTemplatePreviewImageUrl,
+        sort_order: sortOrder,
+      }
+      const res = await apiFetch(editingSubTemplate ? `/api/product/sub-templates/${editingSubTemplate.id}` : `/api/product/templates/${selectedTemplateId}/sub`, {
+        method: editingSubTemplate ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || (editingSubTemplate ? '修改小模板失败' : '创建小模板失败'))
+      const saved = normalizeSubTemplate(data as unknown as ProductSubTemplate, currentTemplate)
+      if (editingSubTemplate) {
+        updateSubTemplateInState(saved)
+        handleCancelCreateSubTemplate()
+        toast.success('小模板修改成功')
+        return
+      }
+      const nextTemplate: ProductMainTemplate = {
+        ...currentTemplate,
+        sub_template_count: (currentTemplate.sub_template_count || currentSubTemplates.length) + 1,
+        sub_templates: [...currentSubTemplates, saved],
+      }
+      setLoadedTemplateDetails(prev => ({ ...prev, [selectedTemplateId]: nextTemplate }))
+      setTemplates(prev => prev.map(item => item.id === selectedTemplateId ? { ...item, sub_template_count: nextTemplate.sub_template_count } : item))
+      handleCancelCreateSubTemplate()
+      toast.success('小模板创建成功')
+    } catch (error: any) {
+      toast.error(error.message || (editingSubTemplate ? '修改小模板失败' : '创建小模板失败'))
+    } finally {
+      setCreatingSubTemplate(false)
+    }
+  }
+
+  const handleSubTemplatePreviewUpload = async (files: FileList) => {
+    const file = files.item(0)
+    if (!file) return
+    setUploadingSubTemplatePreview(true)
+    setSubTemplatePreviewUploadProgress(0)
+    try {
+      const [url] = await uploadReferenceImages([file], {
+        onProgress: (progress) => setSubTemplatePreviewUploadProgress(progress.percent),
+      })
+      setNewSubTemplatePreviewImageUrl(url)
+      toast.success('预览图上传成功')
+    } catch (error: any) {
+      toast.error(error.message || '预览图上传失败')
+    } finally {
+      setUploadingSubTemplatePreview(false)
+    }
+  }
+
+  const handleDeleteSubTemplate = async () => {
+    if (!deletingSubTemplate) return
+    try {
+      const res = await apiFetch(`/api/product/sub-templates/${deletingSubTemplate.id}`, { method: 'DELETE' })
+      const data = await safeResponseJson(res)
+      if (!res.ok) throw new Error((data.error as string) || '删除小模板失败')
+      removeSubTemplateFromState(deletingSubTemplate)
+      setDeletingSubTemplate(null)
+      toast.success('小模板已删除')
+    } catch (error: any) {
+      toast.error(error.message || '删除小模板失败')
+    }
   }
 
   const handleImageUpload = async (files: FileList) => {
@@ -845,22 +1388,42 @@ export default function ProductImagePage() {
       toast.error(`最多只能上传 ${selectedModel.max_reference_images} 张参考图`)
       return
     }
-
+    const fileList = Array.from(files).slice(0, maxImages)
+    const uploadingItems = fileList.map((file, index) => buildUploadingReferenceItem(file, index))
     setUploadingReference(true)
-    setReferenceUploadProgress({ uploadedCount: 0, totalCount: Math.min(files.length, maxImages), percent: 0, currentFileName: '' })
+    setReferenceImages(prev => [...prev, ...uploadingItems])
     try {
-      const uploadedUrls = await uploadReferenceImages(Array.from(files).slice(0, maxImages), {
+      const uploadedUrls = await uploadReferenceImages(fileList, {
         onProgress: (progress) => {
-          setReferenceUploadProgress(progress)
+          setReferenceImages(prev => prev.map((item) => {
+            if (item.status !== 'uploading') return item
+            if (item.name !== progress.currentFileName) return item
+            return { ...item, progress: progress.percent }
+          }))
         },
       })
-      setReferenceImages(prev => [...prev, ...uploadedUrls])
+      setReferenceImages(prev => {
+        const next = [...prev]
+        uploadedUrls.forEach((url, index) => {
+          const uploadItem = uploadingItems[index]
+          const itemIndex = next.findIndex(item => item.id === uploadItem.id)
+          if (itemIndex !== -1) {
+            next[itemIndex] = {
+              ...next[itemIndex],
+              url,
+              status: 'done',
+              progress: 100,
+            }
+          }
+        })
+        return next
+      })
       toast.success(`已上传 ${uploadedUrls.length} 张参考图`)
     } catch (error: any) {
+      setReferenceImages(prev => prev.filter(item => !uploadingItems.some(uploadingItem => uploadingItem.id === item.id)))
       toast.error(error.message || '参考图上传失败')
     } finally {
       setUploadingReference(false)
-      setReferenceUploadProgress({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
     }
   }
 
@@ -868,59 +1431,9 @@ export default function ProductImagePage() {
     setReferenceImages(referenceImages.filter((_, i) => i !== index))
   }
 
-  // 上传模板库图片
-  const handleLibraryUpload = async (files: FileList) => {
-    if (!files || files.length === 0) return
-    setUploadingLibrary(true)
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const formData = new FormData()
-        formData.append('image', file)
-        formData.append('name', file.name)
-        const res = await apiFetch('/api/product/library-images', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}))
-          throw new Error(data.error || '上传失败')
-        }
-      }
-      toast.success('已上传到模板库')
-      await fetchLibraryImages()
-    } catch (error: any) {
-      toast.error(error.message || '上传模板库图片失败')
-    } finally {
-      setUploadingLibrary(false)
-      if (libraryFileRef.current) libraryFileRef.current.value = ''
-    }
-  }
-
-  // 删除模板库图片
-  const handleLibraryDelete = async (id: number) => {
-    try {
-      const res = await apiFetch(`/api/product/library-images/${id}`, { method: 'DELETE' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || '删除失败')
-      }
-      if (selectedLibraryImageId === id) setSelectedLibraryImageId(null)
-      await fetchLibraryImages()
-      toast.success('已删除')
-    } catch (error: any) {
-      toast.error(error.message || '删除模板库图片失败')
-    }
-  }
-
   const handleGenerate = async () => {
     if (!selectedModelId) { toast.error('请选择模型'); return }
-    if (referenceImages.length === 0) { toast.error('请至少上传一张参考图'); return }
-
-    // 单张模式下，若选中模板库图片，作为最后一张参考图追加
-    const finalReferenceImages = isTemplateMode
-      ? referenceImages
-      : (selectedLibraryImage ? [...referenceImages, selectedLibraryImage.url] : referenceImages)
+    if (uploadedReferenceImages.length === 0) { toast.error('请至少上传一张参考图'); return }
 
     const runGenerate = async (genMode: 'single' | 'template', body: Record<string, unknown>, genCost: number) => {
       if (userCredits < genCost) { toast.error('创作积分不足'); return }
@@ -935,6 +1448,7 @@ export default function ProductImagePage() {
         if (!res.ok) throw new Error((data.error as string) || '生成失败')
         const taskIds: number[] = Array.isArray(data.task_ids) ? data.task_ids as number[] : []
         if (taskIds.length === 0) throw new Error('未创建生成任务')
+        taskIds.forEach(id => autoCanvasTaskIdsRef.current.add(id))
         toast.success(`已创建 ${taskIds.length} 个生成任务`)
         setUserCredits(userCredits - genCost)
         localStorage.setItem('userCreativeCredits', String(userCredits - genCost))
@@ -946,22 +1460,37 @@ export default function ProductImagePage() {
       }
     }
 
-    if (isTemplateMode) {
+    const referenceUrls = uploadedReferenceImages.map(item => item.url).filter((url): url is string => Boolean(url))
+    if (hasAppliedTemplates) {
+      const emptyIndex = appliedTemplateSubTemplates.findIndex(item => !(appliedTemplatePrompts[item.id] ?? item.fixed_prompt ?? '').trim())
+      if (emptyIndex !== -1) {
+        setActiveAppliedTemplateIndex(emptyIndex)
+        toast.error('请补全当前小模板提示词')
+        return
+      }
       await runGenerate('template', {
-        main_template_id: selectedMainTemplateId,
-        sub_template_ids: selectedSubTemplateIds,
-        reference_images: finalReferenceImages,
-        additional_prompt: prompt
-      }, templateCost)
-    } else {
-      if (!prompt.trim()) { toast.error('请输入文案'); return }
-      await runGenerate('single', {
-        reference_images: finalReferenceImages,
-        prompt,
+        reference_images: referenceUrls,
+        template_sub_templates: appliedTemplateSubTemplates.map(item => ({
+          main_template_id: item.main_template_id,
+          sub_template_id: item.id,
+        })),
+        template_prompt_overrides: appliedTemplateSubTemplates.map(item => ({
+          main_template_id: item.main_template_id,
+          sub_template_id: item.id,
+          prompt: appliedTemplatePrompts[item.id] ?? item.fixed_prompt ?? '',
+        })),
         size,
-        count
-      }, singleCost)
+        count: appliedTemplateSubTemplates.length
+      }, (selectedModel?.cost_per_image || 0) * appliedTemplateSubTemplates.length)
+      return
     }
+    if (!prompt.trim()) { toast.error('请输入文案'); return }
+    await runGenerate('single', {
+      reference_images: referenceUrls,
+      prompt,
+      size,
+      count
+    }, singleCost)
   }
 
   const pollTasks = async (taskIds: number[], options?: { appendInitialTasks?: boolean }) => {
@@ -982,7 +1511,7 @@ export default function ProductImagePage() {
           tasksList.forEach((t: GenerationTask) => {
             const idx = updated.findIndex(u => u.id === t.id)
             if (idx !== -1) {
-              const wasPending = updated[idx].status === 'pending' || updated[idx].status === 'processing'
+              const wasPending = isRunningTaskStatus(updated[idx].status)
               const isNowDone = t.status === 'completed' || t.status === 'failed'
               updated[idx] = {
                 ...t,
@@ -1019,9 +1548,18 @@ export default function ProductImagePage() {
     return cleanup
   }
 
-  const canGenerate = isTemplateMode
-    ? referenceImages.length > 0 && selectedSubTemplateIds.length > 0
-    : referenceImages.length > 0 && prompt.trim().length > 0
+  const canGenerate = uploadedReferenceImages.length > 0 && (hasAppliedTemplates ? appliedTemplateSubTemplates.every(item => (appliedTemplatePrompts[item.id] ?? item.fixed_prompt ?? '').trim().length > 0) : prompt.trim().length > 0)
+  const filteredTemplates = templates.filter(item => {
+    const keyword = templateSearch.trim().toLowerCase()
+    const matchesKeyword = !keyword || item.name.toLowerCase().includes(keyword) || (item.description || '').toLowerCase().includes(keyword)
+    const matchesGroup = templateGroupFilter === 'all' || String(item.group_id || '') === templateGroupFilter
+    return matchesKeyword && matchesGroup
+  })
+  const displayTemplates = filteredTemplates.map(item => loadedTemplateDetails[item.id] ? { ...item, ...loadedTemplateDetails[item.id] } : item)
+  const canCreateTemplate = newTemplateName.trim().length > 0 && (newTemplateGroupMode === 'new' ? newTemplateGroupName.trim().length > 0 : newTemplateGroupId.length > 0)
+  const currentTemplate = selectedTemplateId ? loadedTemplateDetails[selectedTemplateId] || templates.find(item => item.id === selectedTemplateId) : null
+  const currentSubTemplates = currentTemplate?.sub_templates || []
+  const selectedTemplateCount = Array.from(new Set(selectedSubTemplates.map(item => item.main_template_id))).length
 
   if (loading) {
     return (
@@ -1049,259 +1587,364 @@ export default function ProductImagePage() {
           <h1 className="text-sm font-semibold tracking-tight text-foreground">商品主图</h1>
 
           <div className="flex items-center gap-3">
-            {/* 单张生成 / 模板生成 下拉选择 */}
-            <Select
-              value={mode}
-              onValueChange={(v) => handleModeChange(v as GenerateMode)}
-              items={{ single: '单张生成', template: '模板生成' }}
-            >
-              <SelectTrigger size="sm" className="w-[120px] text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="single">单张生成</SelectItem>
-                <SelectItem value="template">模板生成</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
+            <Dialog open={showTemplateDialog} onOpenChange={handleTemplateDialogOpenChange}>
               <DialogTrigger
                 render={
                   <Button variant="outline" size="sm">
                     <HugeiconsIcon icon={FolderKanbanIcon} size={14} strokeWidth={1.7} className="mr-1.5" />
-                    模板管理
+                    模板
                   </Button>
                 }
               />
-              <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>模板管理</DialogTitle>
+              <DialogContent className="flex h-[min(86vh,820px)] !w-[min(96vw,1280px)] !max-w-none flex-col gap-0 overflow-hidden border border-border p-0 shadow-xl sm:!max-w-[min(96vw,1280px)]">
+                <DialogHeader className="border-b border-border px-5 py-4 pr-12">
+                  <DialogTitle className="text-lg">模板管理</DialogTitle>
                 </DialogHeader>
-                <TemplateManagementContent />
+                <TemplateManagementContent
+                  templates={displayTemplates}
+                  templateGroups={templateGroups}
+                  currentTemplate={currentTemplate}
+                  currentSubTemplates={currentSubTemplates}
+                  selectedSubTemplates={selectedSubTemplates}
+                  loading={loadingTemplates}
+                  search={templateSearch}
+                  groupFilter={templateGroupFilter}
+                  selectedTemplateId={selectedTemplateId}
+                  templateSelectedSubTemplateIds={templateSelectedSubTemplateIds}
+                  selectedSubTemplateCount={templateSelectedSubTemplateIds.size}
+                  selectedTemplateCount={selectedTemplateCount}
+                  onSearchChange={setTemplateSearch}
+                  onGroupFilterChange={setTemplateGroupFilter}
+                  onSelectTemplate={(id) => void selectTemplate(id)}
+                  onCreateTemplateClick={handleCreateTemplateClick}
+                  onCreateSubTemplateClick={handleCreateSubTemplateClick}
+                  onApplyCurrentTemplate={handleApplyCurrentTemplate}
+                  onEditTemplate={handleEditTemplateClick}
+                  onDeleteTemplate={setDeletingTemplate}
+                  onEditSubTemplate={handleEditSubTemplateClick}
+                  onDeleteSubTemplate={setDeletingSubTemplate}
+                  onToggleSubTemplate={handleToggleSubTemplate}
+                  onApply={handleApplyTemplateSelection}
+                />
               </DialogContent>
             </Dialog>
+
+            <Dialog open={showCreateTemplateDialog} onOpenChange={(open) => open ? setShowCreateTemplateDialog(true) : (setShowCreateTemplateDialog(false), resetTemplateForm())}>
+              <DialogContent className="!w-[min(92vw,520px)] !max-w-none overflow-hidden p-0 sm:!max-w-[min(92vw,520px)]">
+                <DialogHeader className="border-b border-border px-5 py-4 pr-12">
+                  <DialogTitle>{editingTemplate ? '编辑模板' : '添加模板'}</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 p-5">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">模板名称</Label>
+                    <Input value={newTemplateName} onChange={(event) => setNewTemplateName(event.target.value)} placeholder="输入模板名称" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">模板描述</Label>
+                    <Textarea value={newTemplateDescription} onChange={(event) => setNewTemplateDescription(event.target.value)} placeholder="输入模板描述，可选" rows={4} className="resize-none" />
+                  </div>
+                  <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-xs text-muted-foreground">模板分组</Label>
+                      <div className="flex rounded-md border border-border bg-background p-0.5">
+                        <button type="button" onClick={() => setNewTemplateGroupMode('existing')} className={cn('rounded px-2 py-1 text-xs transition', newTemplateGroupMode === 'existing' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}>选择</button>
+                        <button type="button" onClick={() => setNewTemplateGroupMode('new')} className={cn('rounded px-2 py-1 text-xs transition', newTemplateGroupMode === 'new' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}>新建</button>
+                      </div>
+                    </div>
+                    {newTemplateGroupMode === 'existing' ? (
+                      <Select value={newTemplateGroupId} onValueChange={(value) => value && setNewTemplateGroupId(value)} items={Object.fromEntries(templateGroups.map(group => [String(group.id), group.name]))}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="选择模板分组" />
+                        </SelectTrigger>
+                        <SelectContent align="start">
+                          {templateGroups.map(group => (
+                            <SelectItem key={group.id} value={String(group.id)}>
+                              <span className={cn('inline-flex h-5 items-center rounded-md border px-2 text-[10px]', getTemplateGroupBadgeClass(group.badge_color))}>{group.name}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
+                        <Input value={newTemplateGroupName} onChange={(event) => setNewTemplateGroupName(event.target.value)} placeholder="输入新分组名称" />
+                        <Select value={newTemplateGroupColor} onValueChange={(value) => setNewTemplateGroupColor(value as TemplateGroupColor)} items={Object.fromEntries(templateGroupColorOptions.map(item => [item.value, item.label]))}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent align="start">
+                            {templateGroupColorOptions.map(item => (
+                              <SelectItem key={item.value} value={item.value}>
+                                <span className="inline-flex items-center gap-2"><span className={cn('h-2.5 w-2.5 rounded-full', item.dotClassName)} />{item.label}</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">可见性</Label>
+                    <Select value={newTemplateVisibility} onValueChange={(value) => setNewTemplateVisibility(value as 'private' | 'public')} items={{ private: '私有', public: '公开' }}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="private">私有</SelectItem>
+                        <SelectItem value="public">公开</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex justify-end gap-2 border-t border-border pt-4">
+                    <Button variant="outline" onClick={() => { setShowCreateTemplateDialog(false); resetTemplateForm() }} disabled={creatingTemplate}>取消</Button>
+                    <Button onClick={() => void handleSaveTemplate()} disabled={creatingTemplate || !canCreateTemplate}>
+                      {creatingTemplate && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {editingTemplate ? '保存修改' : '创建模板'}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={showCreateSubTemplateDialog} onOpenChange={(open) => open ? setShowCreateSubTemplateDialog(true) : handleCancelCreateSubTemplate()}>
+              <DialogContent className="!w-[min(92vw,640px)] !max-w-none overflow-hidden p-0 sm:!max-w-[min(92vw,640px)]">
+                <DialogHeader className="border-b border-border px-5 py-4 pr-12">
+                  <DialogTitle>{editingSubTemplate ? '修改小模板' : '添加小模板'}</DialogTitle>
+                </DialogHeader>
+                <div className="flex flex-col gap-4 p-5">
+                  <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+                    当前主模板：{currentTemplate?.name || '未选择'}
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
+                    <div className="flex flex-col gap-2">
+                      <Label className="text-xs text-muted-foreground">小模板名称</Label>
+                      <Input value={newSubTemplateName} onChange={(event) => setNewSubTemplateName(event.target.value)} placeholder="例如：白底产品特写" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label className="text-xs text-muted-foreground">排序</Label>
+                      <Input type="number" value={newSubTemplateSortOrder} onChange={(event) => setNewSubTemplateSortOrder(event.target.value)} placeholder="0" />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="text-xs text-muted-foreground">效果预览图</Label>
+                    <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
+                      <div className="aspect-square overflow-hidden rounded-lg border border-dashed border-border bg-muted/30">
+                        {newSubTemplatePreviewImageUrl ? (
+                          <img src={toImageSrc(newSubTemplatePreviewImageUrl, { width: 320, height: 320 })} alt="小模板效果预览" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
+                            <ImagePlus className="h-5 w-5" />
+                            暂无预览图
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-col justify-center gap-2">
+                        <p className="text-xs text-muted-foreground">仅用于小模板卡片效果展示，不参与生成参考图。</p>
+                        {uploadingSubTemplatePreview && <p className="text-xs text-muted-foreground">上传中 {subTemplatePreviewUploadProgress}%</p>}
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" type="button" disabled={uploadingSubTemplatePreview} onClick={() => document.getElementById('sub-template-preview-upload')?.click()}>
+                            {uploadingSubTemplatePreview && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            {newSubTemplatePreviewImageUrl ? '更换图片' : '上传图片'}
+                          </Button>
+                          {newSubTemplatePreviewImageUrl && (
+                            <Button size="sm" variant="ghost" type="button" disabled={uploadingSubTemplatePreview} onClick={() => setNewSubTemplatePreviewImageUrl(null)}>移除图片</Button>
+                          )}
+                        </div>
+                        <input id="sub-template-preview-upload" type="file" accept="image/*" className="hidden" disabled={uploadingSubTemplatePreview} onChange={(event) => {
+                          if (event.target.files) void handleSubTemplatePreviewUpload(event.target.files)
+                          event.target.value = ''
+                        }} />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="text-xs text-muted-foreground">固定提示词</Label>
+                    <Textarea value={newSubTemplatePrompt} onChange={(event) => setNewSubTemplatePrompt(event.target.value)} placeholder="输入这个小模板固定使用的提示词" rows={6} className="resize-none" />
+                  </div>
+                  <div className="flex justify-end gap-2 border-t border-border pt-4">
+                    <Button variant="outline" onClick={handleCancelCreateSubTemplate} disabled={creatingSubTemplate}>取消</Button>
+                    <Button onClick={() => void handleSaveSubTemplate()} disabled={creatingSubTemplate || uploadingSubTemplatePreview || !newSubTemplateName.trim() || !newSubTemplatePrompt.trim()}>
+                      {creatingSubTemplate && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {editingSubTemplate ? '保存修改' : '创建小模板'}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <AlertDialog open={Boolean(deletingSubTemplate)} onOpenChange={(open) => !open && setDeletingSubTemplate(null)}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>删除小模板</AlertDialogTitle>
+                  <AlertDialogDescription>确定删除“{deletingSubTemplate?.name}”吗？删除后无法恢复。</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction variant="destructive" onClick={() => void handleDeleteSubTemplate()}>确认删除</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <AlertDialog open={Boolean(deletingTemplate)} onOpenChange={(open) => !open && setDeletingTemplate(null)}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>删除大模板</AlertDialogTitle>
+                  <AlertDialogDescription>确定删除“{deletingTemplate?.name}”吗？删除后该大模板下的所有小模板也会被删除，且无法恢复。</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction variant="destructive" onClick={() => void handleDeleteTemplate()}>确认删除</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </div>
       </header>
 
       {/* 主体：左列固定窄宽 + 右列弹性，左列自然高，右列伸展匹配，整页右侧滚动 */}
-      <main className="flex-1">
-        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[340px_1fr] lg:items-stretch">
-          {/* 左列：4 个卡片 */}
-          <div className="space-y-3">
-            {/* 1. 上传产品图片 */}
-            <Card size="sm">
+      <main className="flex min-h-0 flex-1 flex-col">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[340px_1fr] lg:items-stretch">
+          {/* 左列 */}
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <Card size="sm" className="shrink-0">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
                   <HugeiconsIcon icon={Upload04Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
-                  上传产品图片
+                  上传参考图
                 </CardTitle>
-                <p className="text-[11px] text-muted-foreground">支持 JPG / PNG / WEBP 格式</p>
               </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-3 gap-2">
-                  {referenceImages.map((img, index) => (
-                    <div key={index} className="group relative aspect-square overflow-hidden rounded-md border border-border bg-muted">
-                      <img src={img} alt="" className="h-full w-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveImage(index)}
-                        className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/70 text-background opacity-0 transition group-hover:opacity-100"
-                      >
-                        <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
-                      </button>
-                    </div>
-                  ))}
-                  {canUploadMore && (
-                    <label className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed border-border transition hover:border-foreground/40 hover:bg-muted/50">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
-                        {uploadingReference ? (
-                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                        ) : (
-                          <HugeiconsIcon icon={Upload04Icon} size={12} strokeWidth={1.7} className="text-muted-foreground" />
-                        )}
-                      </div>
-                      <span className="text-[10px] text-muted-foreground">{uploadingReference ? `${referenceUploadProgress.percent}%` : '上传图片'}</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        className="hidden"
-                        disabled={uploadingReference}
-                        onChange={(e) => e.target.files && handleImageUpload(e.target.files)}
-                      />
-                    </label>
-                  )}
-                </div>
-                {selectedModel && (
-                  <p className="mt-2 text-[10px] text-muted-foreground">
-                    {referenceImages.length}/{selectedModel.max_reference_images} 张
-                  </p>
-                )}
-                {uploadingReference && referenceUploadProgress.totalCount > 0 && (
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    正在上传 {referenceUploadProgress.uploadedCount}/{referenceUploadProgress.totalCount}
-                    {referenceUploadProgress.currentFileName ? ` · ${referenceUploadProgress.currentFileName}` : ''}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+              <CardContent className="flex flex-col gap-3">
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  disabled={uploadingReference || !canUploadMore}
+                  onChange={(e) => e.target.files && handleImageUpload(e.target.files)}
+                />
 
-            {/* 2. 模板库（单张模式） / 选择主图模板（模板模式） */}
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  {isTemplateMode ? (
-                    <HugeiconsIcon icon={Layers01Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
-                  ) : (
-                    <HugeiconsIcon icon={Layers01Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
-                  )}
-                  {isTemplateMode ? '选择主图模板' : '模板库'}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {isTemplateMode ? (
-                  <>
-                    <Select
-                      value={String(selectedMainTemplateId || '')}
-                      onValueChange={(v) => setSelectedMainTemplateId(Number(v))}
+                <div className="overflow-hidden">
+                  <div className="flex h-full gap-3 overflow-x-auto overflow-y-hidden pb-1 pr-1">
+                  {canUploadMore && (
+                    <Attachment
+                      orientation="vertical"
+                      size="sm"
+                      className="relative flex h-[146px] w-24 shrink-0 items-center justify-center border-dashed bg-muted/20 p-2 hover:border-foreground/30 hover:bg-muted/40"
                     >
-                      <SelectTrigger className="text-sm">
-                        <SelectValue placeholder="选择主图模板" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {mainTemplates.map((template) => (
-                          <SelectItem key={template.id} value={String(template.id)}>
-                            <span>{template.name}</span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {selectedTemplateDetail && (
-                      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-                        {selectedTemplateDetail.sub_templates.map((subTemplate) => (
-                          <label
-                            key={subTemplate.id}
-                            className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition hover:bg-muted"
-                          >
-                            <Checkbox
-                              checked={selectedSubTemplateIds.includes(subTemplate.id)}
-                              onCheckedChange={(checked) => {
-                                if (checked) {
-                                  setSelectedSubTemplateIds([...selectedSubTemplateIds, subTemplate.id])
-                                } else {
-                                  setSelectedSubTemplateIds(selectedSubTemplateIds.filter(id => id !== subTemplate.id))
-                                }
-                              }}
-                              className="mt-0.5"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-medium text-foreground">{subTemplate.name}</div>
-                              <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{subTemplate.fixed_prompt}</div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <input
-                      ref={libraryFileRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => e.target.files && handleLibraryUpload(e.target.files)}
-                    />
-                    <div className="grid grid-cols-3 gap-2">
-                      {libraryImages.map((img) => (
-                        <div
-                          key={img.id}
+                      <ImagePlus className="h-5 w-5 text-muted-foreground" />
+                      <AttachmentTrigger
+                        type="button"
+                        aria-label={referenceImages.length > 0 ? '继续上传参考图' : '上传参考图'}
+                        disabled={uploadingReference}
+                        onClick={() => uploadInputRef.current?.click()}
+                      />
+                    </Attachment>
+                  )}
+                  {referenceImages.map((img, index) => (
+                    <Attachment
+                      key={img.id}
+                      orientation="vertical"
+                      size="sm"
+                      state={img.status === 'uploading' ? 'uploading' : 'done'}
+                      className="group relative h-fit w-24 shrink-0 gap-2 p-2"
+                    >
+                      <AttachmentMedia variant="image" orientation="vertical" size="sm" className="aspect-square h-auto w-full rounded-lg bg-muted">
+                        {img.status === 'uploading' || !img.url ? (
+                          <Skeleton className="h-full w-full rounded-lg" />
+                        ) : (
+                          <img
+                            src={toImageSrc(img.url, { width: 320, height: 320 })}
+                            alt={img.name}
+                            className="h-full w-full object-cover"
+                          />
+                        )}
+                      </AttachmentMedia>
+                      <AttachmentContent className="space-y-0.5">
+                        <AttachmentTitle
                           className={cn(
-                            'group relative aspect-square overflow-hidden rounded-md border-2 cursor-pointer transition',
-                            selectedLibraryImageId === img.id
-                              ? 'border-foreground'
-                              : 'border-border hover:border-foreground/40'
+                            'text-[11px]',
+                            img.status === 'uploading' && 'text-foreground/80 animate-pulse'
                           )}
-                          onClick={() => setSelectedLibraryImageId(selectedLibraryImageId === img.id ? null : img.id)}
                           title={img.name}
                         >
-                          <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
-                          {selectedLibraryImageId === img.id && (
-                            <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground">
-                              <svg className="h-2.5 w-2.5 text-background" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                              </svg>
-                            </div>
-                          )}
-                          <button
+                          {img.name}
+                        </AttachmentTitle>
+                        <AttachmentDescription className="text-[10px]">{img.status === 'uploading' ? `上传中 ${img.progress}%` : `${img.typeLabel} · ${img.sizeLabel}`}</AttachmentDescription>
+                      </AttachmentContent>
+                      {img.status === 'done' && (
+                        <AttachmentActions className="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100">
+                          <AttachmentAction
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); handleLibraryDelete(img.id) }}
-                            className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 transition group-hover:opacity-100"
-                            title="删除"
+                            aria-label={`删除 ${img.name}`}
+                            onClick={() => handleRemoveImage(index)}
+                            className="bg-background/80 text-muted-foreground shadow-sm backdrop-blur hover:bg-background hover:text-foreground"
                           >
-                            <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={2} />
-                          </button>
-                        </div>
-                      ))}
-                      <label
-                        className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed border-border transition hover:border-foreground/40 hover:bg-muted/50"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {uploadingLibrary ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                        ) : (
-                          <>
-                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted">
-                              <HugeiconsIcon icon={Upload04Icon} size={12} strokeWidth={1.7} className="text-muted-foreground" />
-                            </div>
-                            <span className="text-[10px] text-muted-foreground">上传</span>
-                          </>
-                        )}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          className="hidden"
-                          onChange={(e) => e.target.files && handleLibraryUpload(e.target.files)}
-                        />
-                      </label>
-                    </div>
-                    {selectedLibraryImage && (
-                      <p className="mt-2 text-[10px] text-muted-foreground">
-                        已选模板库图片，将作为最后一张参考图发送
-                      </p>
-                    )}
-                  </>
+                            <X className="h-3.5 w-3.5" />
+                          </AttachmentAction>
+                        </AttachmentActions>
+                      )}
+                    </Attachment>
+                  ))}
+                  </div>
+                </div>
+                {selectedModel && (
+                  <div className="flex justify-end gap-2">
+                    <Badge variant="outline" className="h-5 shrink-0 border-purple-200 bg-purple-50 px-1.5 text-[10px] text-purple-700">
+                      已上传 {uploadedReferenceImages.length} 张参考图
+                    </Badge>
+                    <Badge variant="outline" className="h-5 shrink-0 border-blue-200 bg-blue-50 px-1.5 text-[10px] text-blue-700">
+                      最多 {selectedModel.max_reference_images} 张
+                    </Badge>
+                  </div>
                 )}
               </CardContent>
             </Card>
 
-            {/* 3. 输入文案 */}
-            <Card size="sm">
-              <CardHeader>
+            {/* 输入提示词 */}
+            <Card size="sm" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
                 <CardTitle className="flex items-center gap-2 text-sm">
                   <HugeiconsIcon icon={File02Icon} size={16} strokeWidth={1.7} className="text-muted-foreground" />
-                  输入文案
+                  输入提示词
                 </CardTitle>
+                {activeAppliedTemplate && (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Badge variant="outline" className="h-7 max-w-32 truncate border-yellow-200 bg-yellow-50 px-2 text-[10px] text-yellow-800" title={activeAppliedTemplate.name}>
+                      {activeAppliedTemplate.name}
+                    </Badge>
+                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 rounded-md p-0" onClick={() => setActiveAppliedTemplateIndex(prev => (prev - 1 + appliedTemplateSubTemplates.length) % appliedTemplateSubTemplates.length)}>
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 rounded-md p-0" onClick={() => setActiveAppliedTemplateIndex(prev => (prev + 1) % appliedTemplateSubTemplates.length)}>
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
               </CardHeader>
-              <CardContent>
-                <div className="relative">
+              <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="relative flex min-h-0 flex-1 flex-col">
                   <Textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value.slice(0, 5000))}
-                    placeholder={isTemplateMode ? '补充说明，如产品颜色、尺寸等...' : '描述商品卖点、场景、光线、构图等...'}
+                    value={activeAppliedTemplatePrompt}
+                    onChange={(e) => {
+                      const value = e.target.value.slice(0, 5000)
+                      if (activeAppliedTemplate) {
+                        setAppliedTemplatePrompts(prev => ({ ...prev, [activeAppliedTemplate.id]: value }))
+                        return
+                      }
+                      setPrompt(value)
+                    }}
+                    placeholder={hasAppliedTemplates ? '编辑当前小模板提示词...' : '描述商品卖点、场景、光线、构图等...'}
                     rows={4}
-                    className="resize-none text-sm overflow-y-auto"
-                    style={{ maxHeight: '120px' }}
+                    className="h-full min-h-0 flex-1 resize-none overflow-y-auto text-sm"
                   />
-                  <span className="absolute bottom-2 right-3 text-[10px] text-muted-foreground">{prompt.length}/5000</span>
+                  <span className="absolute bottom-2 right-3 text-[10px] text-muted-foreground">{hasAppliedTemplates ? `${activeAppliedTemplateIndex + 1}/${appliedTemplateSubTemplates.length} · ${activeAppliedTemplatePrompt.length}/5000` : `${prompt.length}/5000`}</span>
                 </div>
+                {activeAppliedTemplate && (
+                  <p className="mt-2 text-[11px] text-muted-foreground">当前小模板：{activeAppliedTemplate.main_template_name ? `${activeAppliedTemplate.main_template_name} / ` : ''}{activeAppliedTemplate.name}，修改仅用于本次生成</p>
+                )}
               </CardContent>
             </Card>
 
-            {/* 4. 生成设置 */}
+            {/* 生成设置 */}
             <Card size="sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
@@ -1336,21 +1979,20 @@ export default function ProductImagePage() {
                       className="flex-1"
                     />
                   </div>
-                  {!isTemplateMode && (
-                    <div className="flex items-center gap-3">
-                      <Label className="w-16 shrink-0 text-xs text-muted-foreground">生图数量</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={count}
-                        onChange={(e) => {
-                          const value = Math.max(1, parseInt(e.target.value) || 1)
-                          setCount(value)
-                        }}
-                        className="flex-1 text-sm"
-                      />
-                    </div>
-                  )}
+                  <div className="flex items-center gap-3">
+                    <Label className="w-16 shrink-0 text-xs text-muted-foreground">生图数量</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={effectiveCount}
+                      onChange={(e) => {
+                        const value = Math.max(1, parseInt(e.target.value) || 1)
+                        setCount(value)
+                      }}
+                      disabled={hasAppliedTemplates}
+                      className="flex-1 text-sm"
+                    />
+                  </div>
                 </div>
                 <Button
                   onClick={handleGenerate}
@@ -1374,9 +2016,9 @@ export default function ProductImagePage() {
           </div>
 
           {/* 右列：自由画布 + 生成记录（伸展匹配左列高度） */}
-          <div className="flex flex-col gap-3 lg:h-full">
+          <div className="flex min-h-0 flex-col gap-3 lg:h-full">
             {/* 1. 自由画布（占比大） */}
-            <Card size="sm" className="flex min-h-[400px] flex-1 flex-col overflow-hidden">
+            <Card size="sm" className="flex min-h-[400px] min-h-0 flex-1 flex-col overflow-hidden py-0 gap-0 data-[size=sm]:py-0 data-[size=sm]:gap-0">
               <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-foreground">生成预览</span>
@@ -1403,21 +2045,21 @@ export default function ProductImagePage() {
                   </Button>
                 </div>
               </div>
-              <div
-                ref={canvasContainerRef}
-                className="relative flex-1 overflow-hidden bg-muted/30"
-                style={{ backgroundImage: 'radial-gradient(circle, hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '16px 16px' }}
-                onWheel={handleCanvasWheel}
-                onPointerDown={handleCanvasPointerDown}
-                onPointerMove={handleCanvasPointerMove}
-                onPointerUp={handleCanvasPointerUp}
-                onPointerCancel={handleCanvasPointerUp}
-              >
-                {/* 缩放百分比指示器 */}
-                <div className="absolute right-3 top-3 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow-sm">
+              <div className="relative min-h-0 flex-1">
+                <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-md bg-background/90 px-2 py-1 text-xs font-medium text-foreground shadow-sm">
                   {canvasZoom}%
                 </div>
-                {canvasImages.length === 0 ? (
+                <div
+                  ref={canvasContainerRef}
+                  className="relative h-full min-h-0 flex-1 overflow-hidden bg-muted/30"
+                  style={{ backgroundImage: 'radial-gradient(circle, hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '16px 16px' }}
+                  onWheel={handleCanvasWheel}
+                  onPointerDown={handleCanvasPointerDown}
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerUp}
+                >
+                  {canvasImages.length === 0 ? (
                   (generating || pendingTasks.length > 0) ? (
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center">
@@ -1527,104 +2169,120 @@ export default function ProductImagePage() {
                       </div>
                     )
                   })
-                )}
+                  )}
+                </div>
               </div>
             </Card>
 
             {/* 2. 生成记录（占比小） */}
-            <Card size="sm" className="flex flex-col overflow-hidden" style={{ minHeight: '160px', maxHeight: '220px' }}>
-              <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <Card size="sm" className="flex flex-col overflow-hidden py-0 gap-0 data-[size=sm]:py-0 data-[size=sm]:gap-0" style={{ minHeight: '160px', maxHeight: '220px' }}>
+              <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2">
                 <span className="text-sm font-semibold text-foreground">生成记录</span>
-                <span className="text-[11px] text-muted-foreground">
-                  {allRecords.length > 0 && `共 ${allRecords.length} 条`}
-                  {totalRecordPages > 1 && ` · 第 ${recordPage + 1}/${totalRecordPages} 页`}
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center rounded-md border border-border bg-muted/30 p-0.5">
+                    {([
+                      ['all', '全部'],
+                      ['completed', '已生成'],
+                      ['failed', '失败'],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setRecordFilter(value)}
+                        className={cn(
+                          'rounded px-2 py-0.5 text-[11px] transition',
+                          recordFilter === value
+                            ? 'bg-background text-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                    {filteredRecords.length > 0 && `共 ${filteredRecords.length} 条`}
+                    {totalRecordPages > 1 && ` · 第 ${recordPage + 1}/${totalRecordPages} 页`}
+                  </span>
+                </div>
               </div>
-              <div className="flex-1 overflow-x-auto overflow-y-hidden p-3">
-                {allRecords.length === 0 ? (
+              <div className="flex-1 p-3">
+                {historyLoading ? (
+                  <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    正在刷新生成记录
+                  </div>
+                ) : filteredRecords.length === 0 ? (
                   <div className="flex h-full items-center justify-center">
-                    <p className="text-xs text-muted-foreground">暂无生成记录</p>
+                    <p className="text-xs text-muted-foreground">
+                      {recordFilter === 'completed' ? '暂无已生成记录' : recordFilter === 'failed' ? '暂无失败记录' : '暂无生成记录'}
+                    </p>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2.5">
-                    {/* 上一页按钮 */}
+                  <div className="relative flex h-full items-start">
                     {recordPage > 0 && (
                       <button
                         type="button"
                         onClick={() => setRecordPage(prev => prev - 1)}
-                        className="flex shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 transition hover:bg-muted hover:border-foreground/20"
-                        style={{ width: '88px', height: '88px' }}
+                        className="absolute left-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background/90 shadow-sm transition hover:border-foreground/20 hover:bg-background"
                         title="上一页"
                       >
-                        <HugeiconsIcon icon={ArrowRight01Icon} size={24} strokeWidth={1.7} style={{ transform: 'rotate(180deg)' }} className="text-muted-foreground" />
+                        <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={1.9} style={{ transform: 'rotate(180deg)' }} className="text-muted-foreground" />
                       </button>
                     )}
-                    
-                    {/* 当前页的记录 */}
-                    {currentPageRecords.map((record, i) => {
-                      if (record.type === 'completed') {
-                        const img = record.data as HistoryImage
-                        return (
-                          <button
-                            key={`completed-${img.taskId}-${recordPage * recordsPerPage + i}`}
-                            type="button"
-                            onClick={() => handleHistoryClick(img.url)}
-                            className={cn(
-                              'group relative shrink-0 overflow-hidden rounded-md border-2 transition',
-                              selectedHistoryImages.has(img.url)
-                                ? 'border-foreground'
-                                : 'border-transparent hover:border-border'
-                            )}
-                            style={{ width: '88px', height: '88px' }}
-                            title="点击选中/取消"
-                          >
-                            <img src={img.url} alt="" className="h-full w-full object-cover" />
-                            {selectedHistoryImages.has(img.url) && (
-                              <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground">
-                                <svg className="h-2.5 w-2.5 text-background" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                </svg>
-                              </div>
-                            )}
-                          </button>
-                        )
-                      } else if (record.type === 'pending') {
+                    <div className="grid h-full w-full grid-cols-8 gap-2.5 px-5">
+                      {recordSlots.map((slot, slotIndex) => {
+                        if (slot.type === 'empty') {
+                          return <div key={slot.key} className="aspect-square w-full rounded-md" aria-hidden="true" />
+                        }
+
+                        const record = slot.record
+
+                        if (record.type === 'completed') {
+                          const img = record.data as HistoryImage
+                          return (
+                            <RecordThumbnail
+                              key={`completed-${img.taskId}-${recordPage * recordsPerPage + slot.index}`}
+                              url={img.url}
+                              selected={selectedHistoryImages.has(img.url)}
+                              onClick={() => handleHistoryClick(img.url)}
+                            />
+                          )
+                        }
+
+                        if (record.type === 'pending') {
+                          const task = record.data as GenerationTask
+                          return (
+                            <div
+                              key={`pending-${task.id}-${slotIndex}`}
+                              className="flex aspect-square w-full items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
+                              title="生成中..."
+                            >
+                              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                            </div>
+                          )
+                        }
+
                         const task = record.data as GenerationTask
                         return (
                           <div
-                            key={`pending-${task.id}`}
-                            className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
-                            style={{ width: '88px', height: '88px' }}
-                            title="生成中..."
-                          >
-                            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                          </div>
-                        )
-                      } else {
-                        const task = record.data as GenerationTask
-                        return (
-                          <div
-                            key={`failed-${task.id}`}
-                            className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
-                            style={{ width: '88px', height: '88px' }}
+                            key={`failed-${task.id}-${slotIndex}`}
+                            className="flex aspect-square w-full items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
                             title={task.error_message || '生成失败'}
                           >
                             <HugeiconsIcon icon={AlertCircleIcon} size={20} strokeWidth={1.7} className="text-destructive/70" />
                           </div>
                         )
-                      }
-                    })}
-                    
-                    {/* 下一页按钮 */}
+                      })}
+                    </div>
                     {recordPage < totalRecordPages - 1 && (
                       <button
                         type="button"
                         onClick={() => setRecordPage(prev => prev + 1)}
-                        className="flex shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 transition hover:bg-muted hover:border-foreground/20"
-                        style={{ width: '88px', height: '88px' }}
+                        className="absolute right-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background/90 shadow-sm transition hover:border-foreground/20 hover:bg-background"
                         title="下一页"
                       >
-                        <HugeiconsIcon icon={ArrowRight01Icon} size={24} strokeWidth={1.7} className="text-muted-foreground" />
+                        <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={1.9} className="text-muted-foreground" />
                       </button>
                     )}
                   </div>
@@ -1645,10 +2303,385 @@ export default function ProductImagePage() {
   )
 }
 
-function TemplateManagementContent() {
+function getSubTemplatePreviewImage(subTemplate: ProductSubTemplate) {
+  if (subTemplate.preview_image_url) return subTemplate.preview_image_url
+  const images = parseJsonArray(subTemplate.fixed_reference_images)
+  return images[0] || null
+}
+
+function getTemplatePreviewImage(template: ProductMainTemplate) {
+  const firstSubTemplate = template.sub_templates?.[0]
+  return firstSubTemplate ? getSubTemplatePreviewImage(firstSubTemplate) : null
+}
+
+function RecordThumbnail({
+  url,
+  selected,
+  onClick,
+}: {
+  url: string
+  selected: boolean
+  onClick: () => void
+}) {
+  const thumbnailSrc = toImageSrc(url, { width: 176, height: 176 })
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoaded(false)
+    setFailed(false)
+    const image = new Image()
+    image.onload = () => {
+      if (!cancelled) setLoaded(true)
+    }
+    image.onerror = () => {
+      if (!cancelled) setFailed(true)
+    }
+    image.src = thumbnailSrc
+    if (image.complete && image.naturalWidth > 0) {
+      setLoaded(true)
+    }
+    return () => {
+      cancelled = true
+      image.onload = null
+      image.onerror = null
+    }
+  }, [thumbnailSrc])
+
   return (
-    <div className="py-8 text-center text-sm text-muted-foreground">
-      <p>模板管理功能开发中</p>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'group relative aspect-square w-full overflow-hidden rounded-md border-2 bg-muted/20 leading-none transition',
+        selected
+          ? 'border-foreground'
+          : 'border-transparent hover:border-border'
+      )}
+      title="点击选中/取消"
+    >
+      {!loaded && !failed && <Skeleton className="absolute inset-0 h-full w-full rounded-md" />}
+      {failed ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-muted/40 text-[11px] text-muted-foreground">
+          加载失败
+        </div>
+      ) : (
+        <img
+          src={thumbnailSrc}
+          alt=""
+          className={cn('block h-full w-full object-cover transition-opacity duration-300', loaded ? 'opacity-100' : 'opacity-0')}
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+      {selected && (
+        <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground">
+          <svg className="h-2.5 w-2.5 text-background" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      )}
+    </button>
+  )
+}
+
+interface TemplateManagementContentProps {
+  templates: ProductMainTemplate[]
+  templateGroups: ProductTemplateGroup[]
+  currentTemplate: ProductMainTemplate | null | undefined
+  currentSubTemplates: ProductSubTemplate[]
+  selectedSubTemplates: ProductSubTemplate[]
+  loading: boolean
+  search: string
+  groupFilter: string
+  selectedTemplateId: number | null
+  templateSelectedSubTemplateIds: Set<number>
+  selectedSubTemplateCount: number
+  selectedTemplateCount: number
+  onSearchChange: (value: string) => void
+  onGroupFilterChange: (value: string) => void
+  onSelectTemplate: (id: number) => void
+  onCreateTemplateClick: () => void
+  onCreateSubTemplateClick: () => void
+  onApplyCurrentTemplate: () => void
+  onEditTemplate: () => void
+  onDeleteTemplate: (template: ProductMainTemplate) => void
+  onEditSubTemplate: (subTemplate: ProductSubTemplate) => void
+  onDeleteSubTemplate: (subTemplate: ProductSubTemplate) => void
+  onToggleSubTemplate: (subTemplate: ProductSubTemplate, checked: boolean) => void
+  onApply: () => void
+}
+
+function TemplateManagementContent({
+  templates,
+  templateGroups,
+  currentTemplate,
+  currentSubTemplates,
+  selectedSubTemplates,
+  loading,
+  search,
+  groupFilter,
+  selectedTemplateId,
+  templateSelectedSubTemplateIds,
+  selectedSubTemplateCount,
+  selectedTemplateCount,
+  onSearchChange,
+  onGroupFilterChange,
+  onSelectTemplate,
+  onCreateTemplateClick,
+  onCreateSubTemplateClick,
+  onApplyCurrentTemplate,
+  onEditTemplate,
+  onDeleteTemplate,
+  onEditSubTemplate,
+  onDeleteSubTemplate,
+  onToggleSubTemplate,
+  onApply,
+}: TemplateManagementContentProps) {
+  const previewSubTemplates = selectedSubTemplates.slice(0, 5)
+  const hiddenPreviewCount = Math.max(selectedSubTemplates.length - 5, 0)
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/20">
+      <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr] overflow-hidden">
+        <aside className="flex min-h-0 flex-col border-r border-border bg-background/80">
+          <div className="border-b border-border p-3">
+            <div className="grid grid-cols-[minmax(0,1fr)_88px_36px] items-center gap-2">
+              <Input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="搜索" className="h-8 min-w-0 text-sm leading-8" />
+              <Select value={groupFilter} onValueChange={(value) => value && onGroupFilterChange(value)} items={{ all: '分组', ...Object.fromEntries(templateGroups.map(group => [String(group.id), group.name])) }}>
+                <SelectTrigger className="h-8 w-full justify-center gap-1 rounded-md px-1 text-xs leading-8 [&>svg:last-child]:hidden [&_[data-slot=select-value]]:flex-none [&_[data-slot=select-value]]:grow-0">
+                  <Tags className="h-3.5 w-3.5" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={4} alignItemWithTrigger={false} className="min-w-0">
+                  <SelectItem value="all">分组</SelectItem>
+                  {templateGroups.map(group => (
+                    <SelectItem key={group.id} value={String(group.id)}>
+                      <span className={cn('inline-flex h-5 items-center rounded-md border px-2 text-[10px]', getTemplateGroupBadgeClass(group.badge_color))}>{group.name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" onClick={onCreateTemplateClick} aria-label="模板" title="模板" className="h-8 w-full shrink-0 rounded-md px-0">
+                <FilePlus2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+            {loading ? (
+              Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-20 w-full rounded-lg" />)
+            ) : templates.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">暂无模板</div>
+            ) : (
+              templates.map(template => (
+                <button key={template.id} type="button" onClick={() => onSelectTemplate(template.id)} className="w-full text-left">
+                  <Card size="sm" className={cn('rounded-lg py-0 transition hover:border-foreground/30 hover:bg-muted/30', selectedTemplateId === template.id && 'border-foreground/40 bg-muted/50 shadow-sm')}>
+                    <CardContent className="flex gap-3 px-3 py-1.5">
+                      <div className="flex h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted">
+                        {(() => {
+                          const previewImage = getTemplatePreviewImage(template)
+                          return previewImage ? (
+                            <img src={toImageSrc(previewImage, { width: 160, height: 160 })} alt={template.name} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center bg-muted text-lg font-semibold text-muted-foreground">
+                              {template.name.trim().charAt(0) || '?'}
+                            </div>
+                          )
+                        })()}
+                      </div>
+                      <div className="flex h-14 min-w-0 flex-1 flex-col justify-between">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="min-w-0 truncate text-sm font-medium leading-5 text-foreground">{template.name}</p>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <Badge variant="outline" className={cn('h-5 max-w-[76px] truncate px-1.5 text-[10px]', getTemplateGroupBadgeClass(template.group_badge_color))}>
+                              {template.group_name || '默认分组'}
+                            </Badge>
+                            <Tooltip>
+                              <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    'h-5 px-1.5 text-[10px]',
+                                    template.visibility === 'public'
+                                      ? 'border-green-200 bg-green-50 text-green-700'
+                                      : 'border-yellow-200 bg-yellow-50 text-yellow-700'
+                                  )}
+                                >
+                                  {template.visibility === 'public' ? '公开' : '私有'}
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                {template.visibility === 'public' ? `模板所有者：${template.username || '未知用户'}` : `私有模板 · 所有者：${template.username || '当前用户'}`}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </div>
+                        <div className="flex items-end justify-between gap-2">
+                          <p className="min-w-0 truncate text-xs leading-5 text-muted-foreground">{template.description || '暂无模板描述'}</p>
+                          <Badge variant="outline" className="h-5 shrink-0 border-blue-200 bg-blue-50 px-1.5 text-[10px] text-blue-700">
+                            {template.sub_template_count || template.sub_templates?.length || 0} 个小模板
+                          </Badge>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </button>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <section className="flex min-h-0 flex-col overflow-hidden bg-background">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
+            <div className="min-w-0">
+              <p className="text-base font-medium text-foreground">{currentTemplate?.name || '选择模板'}</p>
+              <p className="mt-1 text-xs text-muted-foreground">可选择一个或多个小模板，应用后可分别编辑每个提示词</p>
+            </div>
+            {currentTemplate && (
+              <div className="flex items-center gap-2">
+                {selectedSubTemplates.length > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    {previewSubTemplates.map(subTemplate => {
+                      const previewImage = getSubTemplatePreviewImage(subTemplate)
+                      return (
+                        <div key={subTemplate.id} className="group/preview relative h-10 w-10 shrink-0 rounded-lg border border-border bg-muted">
+                          {previewImage ? (
+                            <img src={toImageSrc(previewImage, { width: 120, height: 120 })} alt={subTemplate.name} className="h-full w-full rounded-lg object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                              <ImagePlus className="h-4 w-4" />
+                            </div>
+                          )}
+                          {previewImage && (
+                            <div className="pointer-events-none absolute right-0 top-full z-30 mt-2 hidden w-40 overflow-hidden rounded-xl border border-border bg-background p-1 shadow-xl group-hover/preview:block">
+                              <img src={toImageSrc(previewImage, { width: 420, height: 420 })} alt={subTemplate.name} className="aspect-square w-full rounded-lg object-cover" />
+                              <p className="mt-1 truncate px-1 pb-1 text-[10px] text-muted-foreground">{subTemplate.name}</p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {hiddenPreviewCount > 0 && <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-xs font-medium text-muted-foreground">+{hiddenPreviewCount}</div>}
+                  </div>
+                )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" variant="outline">
+                      <MoreHorizontal className="mr-1.5 h-3.5 w-3.5" />
+                      更多操作
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={onApplyCurrentTemplate}>
+                      <Eye className="h-4 w-4" />
+                      应用大模板
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onEditTemplate}>
+                      <Pencil className="h-4 w-4" />
+                      编辑大模板
+                    </DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" onClick={() => onDeleteTemplate(currentTemplate)}>
+                      <Trash2 className="h-4 w-4" />
+                      删除大模板
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button size="sm" variant="outline" onClick={onCreateSubTemplateClick}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  添加小模板
+                </Button>
+              </div>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {loading ? (
+              <div className="grid grid-cols-4 gap-4">
+                {Array.from({ length: 8 }).map((_, index) => (
+                  <Card key={index} className="gap-0 overflow-hidden rounded-xl py-0">
+                    <Skeleton className="aspect-square w-full" />
+                    <CardContent className="flex flex-col gap-2.5 p-3">
+                      <Skeleton className="h-4 w-3/4" />
+                      <Skeleton className="h-8 w-full rounded-md" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : !currentTemplate ? (
+              <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-xs text-muted-foreground">请选择左侧模板</div>
+            ) : currentSubTemplates.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 text-center">
+                <p className="text-xs text-muted-foreground">当前模板暂无小模板</p>
+                <p className="text-[11px] text-muted-foreground/70">点击右上角添加小模板</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-4 gap-4">
+                {currentSubTemplates.map(subTemplate => {
+                  const previewImage = getSubTemplatePreviewImage(subTemplate)
+                  const checked = templateSelectedSubTemplateIds.has(subTemplate.id)
+                  return (
+                    <Card key={subTemplate.id} role="button" tabIndex={0} onClick={() => onToggleSubTemplate(subTemplate, !checked)} onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onToggleSubTemplate(subTemplate, !checked)
+                      }
+                    }} className={cn('group relative cursor-pointer gap-0 overflow-hidden rounded-xl py-0 ring-1 ring-foreground/10', checked && 'ring-2 ring-blue-600 bg-blue-50/20 shadow-sm')}>
+                      {checked && (
+                        <div className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm">
+                          <Check className="h-3.5 w-3.5" />
+                        </div>
+                      )}
+                      <div className="aspect-square overflow-hidden bg-muted">
+                        {previewImage ? (
+                          <img src={toImageSrc(previewImage, { width: 360, height: 360 })} alt={subTemplate.name} className="block h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
+                            <ImagePlus className="h-5 w-5" />
+                            暂无效果图
+                          </div>
+                        )}
+                      </div>
+                      <CardContent className="flex flex-col gap-2.5 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="min-w-0 truncate text-left text-sm font-semibold leading-5 text-foreground" title={subTemplate.name}>{subTemplate.name}</p>
+                          <Badge variant="outline" className="h-5 shrink-0 rounded-md bg-background/80 px-1.5 text-[10px] text-muted-foreground">#{subTemplate.sort_order ?? 0}</Badge>
+                        </div>
+                        <p className="line-clamp-2 min-h-8 rounded-lg bg-muted/35 px-2.5 py-1.5 text-left text-xs leading-4 text-muted-foreground" title={subTemplate.fixed_prompt}>{subTemplate.fixed_prompt || '暂无提示词'}</p>
+                        <div className="flex gap-2">
+                          <Button size="sm" className="h-7 flex-1 rounded-md bg-black px-2 text-xs text-white shadow-sm hover:bg-black/90" onClick={(event) => {
+                            event.stopPropagation()
+                            onEditSubTemplate(subTemplate)
+                          }}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" />
+                            编辑
+                          </Button>
+                          <Button size="sm" className="h-7 flex-1 rounded-md bg-red-600 px-2 text-xs text-white shadow-sm hover:bg-red-700" onClick={(event) => {
+                            event.stopPropagation()
+                            onDeleteSubTemplate(subTemplate)
+                          }}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            删除
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div className="flex items-center justify-between border-t border-border bg-background px-5 py-4">
+        <p className="text-xs text-muted-foreground">
+          已选择 {selectedSubTemplateCount} 个小模板，来自 {selectedTemplateCount} 个模板
+        </p>
+        <Button onClick={onApply} disabled={selectedSubTemplateCount === 0}>
+          应用已选小模板
+        </Button>
+      </div>
     </div>
   )
 }

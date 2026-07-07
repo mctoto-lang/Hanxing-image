@@ -25,6 +25,7 @@ export function migrate() {
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
+      nickname TEXT,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
       credits INTEGER NOT NULL DEFAULT 0,
@@ -120,6 +121,11 @@ export function migrate() {
 
   const userCols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
   const userColNames = new Set(userCols.map(c => c.name));
+  if (!userColNames.has('nickname')) {
+    db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
+    db.exec("UPDATE users SET nickname = username WHERE nickname IS NULL OR nickname = ''");
+    console.log('已添加 nickname 字段到 users');
+  }
   if (!userColNames.has('daily_credits_remaining')) {
     db.exec("ALTER TABLE users ADD COLUMN daily_credits_remaining INTEGER NOT NULL DEFAULT 0");
     console.log('已添加 daily_credits_remaining 字段到 users');
@@ -435,6 +441,20 @@ export function migrate() {
     console.log('已添加 generation_task_id 字段到 card_images');
   }
 
+  const duplicatePromptCardIndexes = db.prepare(`
+    SELECT task_id, card_index, COUNT(*) as count
+    FROM prompt_cards
+    GROUP BY task_id, card_index
+    HAVING COUNT(*) > 1
+    LIMIT 1
+  `).get() as { task_id: number; card_index: number; count: number } | undefined;
+
+  if (!duplicatePromptCardIndexes) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_cards_task_id_card_index_unique ON prompt_cards(task_id, card_index)');
+  } else {
+    console.warn(`prompt_cards 存在重复序号，暂不创建唯一索引: task_id=${duplicatePromptCardIndexes.task_id}, card_index=${duplicatePromptCardIndexes.card_index}, count=${duplicatePromptCardIndexes.count}`);
+  }
+
   // ===== 对话API并发控制字段 =====
   const chatApiCols = db.prepare("PRAGMA table_info(chat_api_configs)").all() as { name: string }[];
   const chatApiColNames = new Set(chatApiCols.map(c => c.name));
@@ -493,9 +513,21 @@ export function migrate() {
 
   // 3. 创建商品主图模板表
   db.exec(`
+    CREATE TABLE IF NOT EXISTS product_template_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      badge_color TEXT NOT NULL DEFAULT 'slate',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_template_groups_user_id ON product_template_groups(user_id);
+
     CREATE TABLE IF NOT EXISTS product_main_templates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      group_id INTEGER REFERENCES product_template_groups(id),
       name TEXT NOT NULL,
       description TEXT,
       visibility TEXT NOT NULL DEFAULT 'private',
@@ -507,6 +539,23 @@ export function migrate() {
   `);
   console.log('已创建 product_main_templates 表');
 
+  const productMainTemplateCols = db.prepare("PRAGMA table_info(product_main_templates)").all() as { name: string }[];
+  const productMainTemplateColNames = new Set(productMainTemplateCols.map(c => c.name));
+  if (!productMainTemplateColNames.has('group_id')) {
+    db.exec("ALTER TABLE product_main_templates ADD COLUMN group_id INTEGER REFERENCES product_template_groups(id)");
+    console.log('已添加 group_id 字段到 product_main_templates');
+  }
+
+  const templateUsers = db.prepare("SELECT DISTINCT user_id FROM product_main_templates WHERE user_id IS NOT NULL").all() as { user_id: number }[];
+  const insertDefaultGroup = db.prepare("INSERT OR IGNORE INTO product_template_groups (user_id, name, badge_color) VALUES (?, '默认分组', 'slate')");
+  const getDefaultGroup = db.prepare("SELECT id FROM product_template_groups WHERE user_id = ? AND name = '默认分组'");
+  const assignDefaultGroup = db.prepare("UPDATE product_main_templates SET group_id = ? WHERE user_id = ? AND group_id IS NULL");
+  for (const item of templateUsers) {
+    insertDefaultGroup.run(item.user_id);
+    const group = getDefaultGroup.get(item.user_id) as { id: number } | undefined;
+    if (group) assignDefaultGroup.run(group.id, item.user_id);
+  }
+
   // 4. 创建商品小模板表
   db.exec(`
     CREATE TABLE IF NOT EXISTS product_sub_templates (
@@ -515,6 +564,7 @@ export function migrate() {
       name TEXT NOT NULL,
       fixed_prompt TEXT NOT NULL,
       fixed_reference_images TEXT DEFAULT '[]',
+      preview_image_url TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -522,6 +572,13 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_product_sub_templates_main_id ON product_sub_templates(main_template_id);
   `);
   console.log('已创建 product_sub_templates 表');
+
+  const productSubTemplateCols = db.prepare("PRAGMA table_info(product_sub_templates)").all() as { name: string }[];
+  const productSubTemplateColNames = new Set(productSubTemplateCols.map(c => c.name));
+  if (!productSubTemplateColNames.has('preview_image_url')) {
+    db.exec("ALTER TABLE product_sub_templates ADD COLUMN preview_image_url TEXT");
+    console.log('已添加 preview_image_url 字段到 product_sub_templates');
+  }
 
   // 5. 创建商品主图模板库图片表（用户上传的可点选参考图）
   db.exec(`

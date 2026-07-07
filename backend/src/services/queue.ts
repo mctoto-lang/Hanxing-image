@@ -38,6 +38,14 @@ interface ExtraConfig {
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_API_TIMEOUT_MS = 120000;
 const MJ_POLL_INTERVAL_MS = 5000;  // Midjourney 轮询间隔
+
+function getTaskSourceLabel(task: Pick<Task, 'source' | 'task_type'>): string {
+  if (task.task_type === 'workspace_batch') return '批量多图';
+  if (task.task_type === 'workspace_single' || task.source === 'workspace') return '批量单图';
+  if (task.source === 'product') return '商品主图';
+  if (task.source === 'project') return '项目创作';
+  return '自由创作';
+}
 const MJ_MAX_POLL_TIME_MS = 300000; // Midjourney 最大轮询时间 5分钟
 const STALE_TASK_SCAN_INTERVAL_MS = 30000;
 // 尺寸转换：将 "1024x1024" 格式转换为比例格式
@@ -332,6 +340,8 @@ class TaskQueue {
     // 计算当前是第几次调用
     const callCountResult = query('SELECT COUNT(*) as count FROM api_call_logs WHERE task_id = ?', [task.id]);
     const callIndex = (callCountResult.rows[0]?.count || 0) + 1;
+    const taskSource = task.source || 'creative';
+    const taskSourceLabel = getTaskSourceLabel(task);
 
     // 检查任务总超时
     if (taskTimeoutMs > 0 && task.started_at) {
@@ -347,12 +357,14 @@ class TaskQueue {
     // 记录本次调用
     const callLogResult = query(
       'INSERT INTO api_call_logs (task_id, call_index, status, request_params, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-      [task.id, callIndex, 'pending', JSON.stringify({ model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai' })]
+      [task.id, callIndex, 'pending', JSON.stringify({ source: taskSource, source_label: taskSourceLabel, task_type: task.task_type || null, model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai' })]
     );
     const callLogId = callLogResult.lastInsertRowid;
     const workspaceLogId = this.createWorkspaceImageLog(task, model, 'pending', {
       requestParams: {
         generation_task_id: task.id,
+        source: taskSource,
+        source_label: taskSourceLabel,
         task_type: task.task_type || null,
         model: model?.name || null,
         prompt: task.prompt?.slice(0, 200) || '',

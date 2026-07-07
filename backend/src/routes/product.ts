@@ -9,6 +9,64 @@ const router = Router();
 
 // ===== 主图模板管理 =====
 
+const TEMPLATE_GROUP_COLORS = new Set(['slate', 'red', 'orange', 'amber', 'yellow', 'lime', 'green', 'emerald', 'teal', 'cyan', 'sky', 'blue', 'indigo', 'violet', 'purple', 'fuchsia', 'pink', 'rose']);
+
+function selectTemplateWithGroup(templateId: number) {
+  return query(`
+    SELECT t.*, u.username, g.name as group_name, g.badge_color as group_badge_color
+    FROM product_main_templates t
+    JOIN users u ON t.user_id = u.id
+    LEFT JOIN product_template_groups g ON t.group_id = g.id
+    WHERE t.id = ?
+  `, [templateId]);
+}
+
+router.get('/template-groups', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const result = query(
+      'SELECT * FROM product_template_groups WHERE user_id = ? ORDER BY created_at ASC, id ASC',
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/template-groups', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.userId!;
+    const { name, badge_color = 'slate' } = req.body;
+    const groupName = typeof name === 'string' ? name.trim() : '';
+
+    if (!groupName) {
+      return res.status(400).json({ error: '分组名称不能为空' });
+    }
+
+    if (!TEMPLATE_GROUP_COLORS.has(badge_color)) {
+      return res.status(400).json({ error: '徽标颜色参数无效' });
+    }
+
+    const result = query(`
+      INSERT INTO product_template_groups (user_id, name, badge_color)
+      VALUES (?, ?, ?)
+    `, [userId, groupName, badge_color]);
+
+    const group = query(
+      'SELECT * FROM product_template_groups WHERE id = ?',
+      [result.lastInsertRowid]
+    );
+
+    res.status(201).json(group.rows[0]);
+  } catch (error: any) {
+    if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: '分组名称已存在' });
+    }
+    next(error);
+  }
+});
+
 /**
  * GET /api/product/templates
  * 获取主图模板列表（根据权限过滤）
@@ -22,20 +80,22 @@ router.get('/templates', authMiddleware, async (req: AuthRequest, res: Response,
     if (isAdmin) {
       // 管理员可查看所有模板
       const result = query(`
-        SELECT t.*, u.username,
+        SELECT t.*, u.username, g.name as group_name, g.badge_color as group_badge_color,
           (SELECT COUNT(*) FROM product_sub_templates WHERE main_template_id = t.id) as sub_template_count
         FROM product_main_templates t
         JOIN users u ON t.user_id = u.id
+        LEFT JOIN product_template_groups g ON t.group_id = g.id
         ORDER BY t.created_at DESC
       `);
       templates = result.rows;
     } else {
       // 普通用户只能看公开模板 + 自己的私有模板
       const result = query(`
-        SELECT t.*, u.username,
+        SELECT t.*, u.username, g.name as group_name, g.badge_color as group_badge_color,
           (SELECT COUNT(*) FROM product_sub_templates WHERE main_template_id = t.id) as sub_template_count
         FROM product_main_templates t
         JOIN users u ON t.user_id = u.id
+        LEFT JOIN product_template_groups g ON t.group_id = g.id
         WHERE t.visibility = 'public' OR t.user_id = ?
         ORDER BY t.created_at DESC
       `, [userId]);
@@ -59,10 +119,7 @@ router.get('/templates/:id', authMiddleware, async (req: AuthRequest, res: Respo
     const isAdmin = req.userRole === 'admin';
 
     // 查询主模板
-    const templateResult = query(
-      'SELECT * FROM product_main_templates WHERE id = ?',
-      [templateId]
-    );
+    const templateResult = selectTemplateWithGroup(templateId);
 
     if (templateResult.rows.length === 0) {
       return res.status(404).json({ error: '模板不存在' });
@@ -97,7 +154,7 @@ router.get('/templates/:id', authMiddleware, async (req: AuthRequest, res: Respo
 router.post('/templates', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const userId = req.userId!;
-    const { name, description, visibility = 'private' } = req.body;
+    const { name, description, visibility = 'private', group_id } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: '模板名称不能为空' });
@@ -107,15 +164,25 @@ router.post('/templates', authMiddleware, async (req: AuthRequest, res: Response
       return res.status(400).json({ error: '可见性参数无效' });
     }
 
-    const result = query(`
-      INSERT INTO product_main_templates (user_id, name, description, visibility)
-      VALUES (?, ?, ?, ?)
-    `, [userId, name.trim(), description || '', visibility]);
+    const groupId = Number(group_id);
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+      return res.status(400).json({ error: '请选择模板分组' });
+    }
 
-    const newTemplate = query(
-      'SELECT * FROM product_main_templates WHERE id = ?',
-      [result.lastInsertRowid]
+    const groupResult = query(
+      'SELECT id FROM product_template_groups WHERE id = ? AND user_id = ?',
+      [groupId, userId]
     );
+    if (groupResult.rows.length === 0) {
+      return res.status(400).json({ error: '模板分组不存在' });
+    }
+
+    const result = query(`
+      INSERT INTO product_main_templates (user_id, group_id, name, description, visibility)
+      VALUES (?, ?, ?, ?, ?)
+    `, [userId, groupId, name.trim(), description || '', visibility]);
+
+    const newTemplate = selectTemplateWithGroup(result.lastInsertRowid || 0);
 
     res.status(201).json(newTemplate.rows[0]);
   } catch (error) {
@@ -132,7 +199,7 @@ router.patch('/templates/:id', authMiddleware, async (req: AuthRequest, res: Res
     const templateId = parseInt((Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) || "0");
     const userId = req.userId!;
     const isAdmin = req.userRole === 'admin';
-    const { name, description, visibility } = req.body;
+    const { name, description, visibility, group_id } = req.body;
 
     // 查询现有模板
     const templateResult = query(
@@ -167,6 +234,21 @@ router.patch('/templates/:id', authMiddleware, async (req: AuthRequest, res: Res
       updates.push('visibility = ?');
       params.push(visibility);
     }
+    if (group_id !== undefined) {
+      const groupId = Number(group_id);
+      if (!Number.isInteger(groupId) || groupId <= 0) {
+        return res.status(400).json({ error: '模板分组参数无效' });
+      }
+      const groupResult = query(
+        'SELECT id FROM product_template_groups WHERE id = ? AND user_id = ?',
+        [groupId, template.user_id]
+      );
+      if (groupResult.rows.length === 0) {
+        return res.status(400).json({ error: '模板分组不存在' });
+      }
+      updates.push('group_id = ?');
+      params.push(groupId);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: '没有提供更新字段' });
@@ -180,10 +262,7 @@ router.patch('/templates/:id', authMiddleware, async (req: AuthRequest, res: Res
       params
     );
 
-    const updatedTemplate = query(
-      'SELECT * FROM product_main_templates WHERE id = ?',
-      [templateId]
-    );
+    const updatedTemplate = selectTemplateWithGroup(templateId);
 
     res.json(updatedTemplate.rows[0]);
   } catch (error) {
@@ -238,7 +317,7 @@ router.post('/templates/:id/sub', authMiddleware, async (req: AuthRequest, res: 
     const mainTemplateId = parseInt((Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) || "0");
     const userId = req.userId!;
     const isAdmin = req.userRole === 'admin';
-    const { name, fixed_prompt, fixed_reference_images = [], sort_order = 0 } = req.body;
+    const { name, fixed_prompt, fixed_reference_images = [], preview_image_url = null, sort_order = 0 } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: '小模板名称不能为空' });
@@ -266,13 +345,14 @@ router.post('/templates/:id/sub', authMiddleware, async (req: AuthRequest, res: 
 
     const result = query(`
       INSERT INTO product_sub_templates 
-      (main_template_id, name, fixed_prompt, fixed_reference_images, sort_order)
-      VALUES (?, ?, ?, ?, ?)
+      (main_template_id, name, fixed_prompt, fixed_reference_images, preview_image_url, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?)
     `, [
       mainTemplateId,
       name.trim(),
       fixed_prompt.trim(),
       JSON.stringify(fixed_reference_images),
+      typeof preview_image_url === 'string' && preview_image_url.trim() ? preview_image_url.trim() : null,
       sort_order
     ]);
 
@@ -296,7 +376,7 @@ router.patch('/sub-templates/:id', authMiddleware, async (req: AuthRequest, res:
     const subTemplateId = parseInt((Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) || "0");
     const userId = req.userId!;
     const isAdmin = req.userRole === 'admin';
-    const { name, fixed_prompt, fixed_reference_images, sort_order } = req.body;
+    const { name, fixed_prompt, fixed_reference_images, preview_image_url, sort_order } = req.body;
 
     // 查询小模板及其主模板
     const subTemplateResult = query(`
@@ -332,6 +412,10 @@ router.patch('/sub-templates/:id', authMiddleware, async (req: AuthRequest, res:
     if (fixed_reference_images !== undefined) {
       updates.push('fixed_reference_images = ?');
       params.push(JSON.stringify(fixed_reference_images));
+    }
+    if (preview_image_url !== undefined) {
+      updates.push('preview_image_url = ?');
+      params.push(typeof preview_image_url === 'string' && preview_image_url.trim() ? preview_image_url.trim() : null);
     }
     if (sort_order !== undefined) {
       updates.push('sort_order = ?');
@@ -417,6 +501,8 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
       // 模板生成模式专用
       main_template_id,
       sub_template_ids = [],
+      template_sub_templates = [],
+      template_prompt_overrides = [],
       additional_prompt = ''
     } = req.body;
 
@@ -492,18 +578,63 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
         }
       } else {
         // 模板生成模式
-        if (!main_template_id || sub_template_ids.length === 0) {
+        const templateSelections = Array.isArray(template_sub_templates) && template_sub_templates.length > 0
+          ? template_sub_templates.map((item: any) => ({
+              main_template_id: Number(item.main_template_id),
+              sub_template_id: Number(item.sub_template_id)
+            })).filter((item: any) => item.main_template_id && item.sub_template_id)
+          : Array.isArray(sub_template_ids) && sub_template_ids.length > 0 && main_template_id
+            ? sub_template_ids.map((id: any) => ({ main_template_id: Number(main_template_id), sub_template_id: Number(id) })).filter((item: any) => item.main_template_id && item.sub_template_id)
+            : [];
+
+        if (templateSelections.length === 0) {
           throw new Error('模板生成模式需要指定主图模板和小模板');
         }
 
-        // 查询小模板
+        const selectionKeys = new Set(templateSelections.map((item: any) => `${item.main_template_id}:${item.sub_template_id}`));
+        const uniqueSelections = Array.from(selectionKeys).map((key) => {
+          const [mainTemplateId, subTemplateId] = key.split(':').map(Number);
+          return { main_template_id: mainTemplateId, sub_template_id: subTemplateId };
+        });
+        const selectionKeySet = new Set(uniqueSelections.map((item) => `${item.main_template_id}:${item.sub_template_id}`));
+        const promptOverrideMap = new Map<string, string>();
+        if (Array.isArray(template_prompt_overrides)) {
+          for (const item of template_prompt_overrides) {
+            const mainTemplateId = Number(item?.main_template_id);
+            const subTemplateId = Number(item?.sub_template_id);
+            const overridePrompt = typeof item?.prompt === 'string' ? item.prompt.trim() : '';
+            const key = `${mainTemplateId}:${subTemplateId}`;
+            if (!mainTemplateId || !subTemplateId || !selectionKeySet.has(key)) {
+              throw new Error('提示词覆盖的小模板不在本次选择中');
+            }
+            if (!overridePrompt) {
+              throw new Error('模板提示词不能为空');
+            }
+            promptOverrideMap.set(key, overridePrompt);
+          }
+        }
+        const subTemplateIds = uniqueSelections.map(item => item.sub_template_id);
+        const mainTemplateIds = Array.from(new Set(uniqueSelections.map(item => item.main_template_id)));
         const subTemplatesResult = query(`
-          SELECT * FROM product_sub_templates
-          WHERE main_template_id = ? AND id IN (${sub_template_ids.map(() => '?').join(',')})
-        `, [main_template_id, ...sub_template_ids]);
+          SELECT st.*, mt.name as main_template_name, mt.visibility, mt.user_id as main_template_user_id
+          FROM product_sub_templates st
+          JOIN product_main_templates mt ON st.main_template_id = mt.id
+          WHERE st.id IN (${subTemplateIds.map(() => '?').join(',')})
+        `, subTemplateIds);
 
-        if (subTemplatesResult.rows.length !== sub_template_ids.length) {
+        if (subTemplatesResult.rows.length !== uniqueSelections.length) {
           throw new Error('部分小模板不存在');
+        }
+
+        const isAdmin = req.userRole === 'admin';
+        for (const subTemplate of subTemplatesResult.rows) {
+          const matched = uniqueSelections.some(item => item.main_template_id === subTemplate.main_template_id && item.sub_template_id === subTemplate.id);
+          if (!matched) {
+            throw new Error('小模板归属关系不正确');
+          }
+          if (subTemplate.visibility === 'private' && subTemplate.main_template_user_id !== userId && !isAdmin) {
+            throw new Error('无权访问部分小模板');
+          }
         }
 
         totalCost = model.cost_per_image * subTemplatesResult.rows.length;
@@ -521,15 +652,9 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
 
         // 为每个小模板创建任务
         for (const subTemplate of subTemplatesResult.rows) {
-          const mergedPrompt = subTemplate.fixed_prompt + (additional_prompt ? ' ' + additional_prompt : '');
-          const mergedImages = [...reference_images, ...subTemplate.fixed_reference_images];
-
-          // 检查合并后的参考图数量
-          if (mergedImages.length > model.max_reference_images) {
-            throw new Error(
-              `小模板"${subTemplate.name}"的参考图总数超过限制（最多${model.max_reference_images}张）`
-            );
-          }
+          const overridePrompt = promptOverrideMap.get(`${subTemplate.main_template_id}:${subTemplate.id}`);
+          const basePrompt = overridePrompt || subTemplate.fixed_prompt;
+          const mergedPrompt = basePrompt + (additional_prompt ? ' ' + additional_prompt : '');
 
           const taskResult = query(`
             INSERT INTO generation_tasks (
@@ -542,13 +667,15 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
             model_id,
             mergedPrompt,
             size,
-            JSON.stringify(mergedImages),
+            JSON.stringify(reference_images),
             model.cost_per_image,
             JSON.stringify({
               mode: 'template',
-              main_template_id,
+              main_template_id: subTemplate.main_template_id,
+              main_template_name: subTemplate.main_template_name,
               sub_template_id: subTemplate.id,
-              sub_template_name: subTemplate.name
+              sub_template_name: subTemplate.name,
+              prompt_overridden: Boolean(overridePrompt)
             })
           ]);
 

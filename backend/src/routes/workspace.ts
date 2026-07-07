@@ -393,17 +393,19 @@ workspaceRouter.post('/tasks', authMiddleware, async (req: AuthRequest, res) => 
           ? await extractPromptDescriptions(promptTemplateId, theme_prompt, taskId, req.userId!)
           : await fissionPrompts(promptTemplateId, theme_prompt, taskId, req.userId!);
 
-        for (let i = 0; i < prompts.length; i++) {
-          query(
-            `INSERT INTO prompt_cards (task_id, card_index, prompt) VALUES (?, ?, ?)`,
-            [taskId, i + 1, prompts[i]]
-          );
-        }
+        transaction(() => {
+          for (let i = 0; i < prompts.length; i++) {
+            query(
+              `INSERT INTO prompt_cards (task_id, card_index, prompt) VALUES (?, ?, ?)`,
+              [taskId, i + 1, prompts[i]]
+            );
+          }
 
-        query(
-          `UPDATE workspace_tasks SET status = 'completed', card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [prompts.length, taskId]
-        );
+          query(
+            `UPDATE workspace_tasks SET status = 'completed', card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [prompts.length, taskId]
+          );
+        });
       } catch (err) {
         const errorMsg = (err as Error).message;
         query(
@@ -619,45 +621,52 @@ workspaceRouter.get('/tasks/:id/card-images', authMiddleware, async (req: AuthRe
 
 workspaceRouter.post('/tasks/:id/cards', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const taskCheck = query(
-      'SELECT id, card_count FROM workspace_tasks WHERE id = ? AND user_id = ?',
-      [req.params.id, req.userId]
-    );
-    if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
-
     const { prompt } = req.body;
     const newPrompt = typeof prompt === 'string' ? prompt : '';
 
-    const maxIndexResult = query(
-      'SELECT MAX(card_index) as max_index FROM prompt_cards WHERE task_id = ?',
-      [req.params.id]
-    );
-    const newIndex = (maxIndexResult.rows[0]?.max_index || 0) + 1;
+    const createdCard = transaction(() => {
+      const taskCheck = query(
+        'SELECT id FROM workspace_tasks WHERE id = ? AND user_id = ?',
+        [req.params.id, req.userId]
+      );
+      if (!taskCheck.rows[0]) return null;
 
-    const insertResult = query(
-      'INSERT INTO prompt_cards (task_id, card_index, prompt) VALUES (?, ?, ?)',
-      [req.params.id, newIndex, newPrompt]
-    );
-    const newCardId = insertResult.lastInsertRowid;
+      const maxIndexResult = query(
+        'SELECT MAX(card_index) as max_index FROM prompt_cards WHERE task_id = ?',
+        [req.params.id]
+      );
+      const newIndex = (maxIndexResult.rows[0]?.max_index || 0) + 1;
 
-    const newCount = (taskCheck.rows[0].card_count || 0) + 1;
-    query(
-      'UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [newCount, req.params.id]
-    );
+      const insertResult = query(
+        'INSERT INTO prompt_cards (task_id, card_index, prompt) VALUES (?, ?, ?)',
+        [req.params.id, newIndex, newPrompt]
+      );
+      const newCardId = insertResult.lastInsertRowid;
 
-    return res.status(201).json({
-      id: newCardId,
-      task_id: parseInt(String(req.params.id)),
-      card_index: newIndex,
-      prompt: newPrompt,
-      selected_image_id: null,
-      sel_img_id: null,
-      sel_img_url: null,
-      sel_img_size: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [req.params.id]);
+      const newCount = parseInt(countResult.rows[0].count);
+      query(
+        'UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [newCount, req.params.id]
+      );
+
+      return {
+        id: newCardId,
+        task_id: parseInt(String(req.params.id)),
+        card_index: newIndex,
+        prompt: newPrompt,
+        selected_image_id: null,
+        sel_img_id: null,
+        sel_img_url: null,
+        sel_img_size: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
     });
+
+    if (!createdCard) return res.status(404).json({ error: '任务不存在' });
+
+    return res.status(201).json(createdCard);
   } catch {
     return res.status(500).json({ error: '创建卡片失败' });
   }
@@ -692,21 +701,24 @@ workspaceRouter.delete('/cards/:id', authMiddleware, async (req: AuthRequest, re
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
-    query(
-      'UPDATE prompt_cards SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND selected_image_id IS NOT NULL',
-      [req.params.id]
-    );
-
-    query('DELETE FROM workspace_api_logs WHERE card_id = ?', [req.params.id]);
-    query('DELETE FROM chat_tasks WHERE card_id = ?', [req.params.id]);
-
-    query('DELETE FROM prompt_cards WHERE id = ?', [req.params.id]);
-
     const taskId = cardCheck.rows[0].task_id;
-    const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [taskId]);
-    query('UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
-      parseInt(countResult.rows[0].count), taskId
-    ]);
+
+    transaction(() => {
+      query(
+        'UPDATE prompt_cards SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND selected_image_id IS NOT NULL',
+        [req.params.id]
+      );
+
+      query('DELETE FROM workspace_api_logs WHERE card_id = ?', [req.params.id]);
+      query('DELETE FROM chat_tasks WHERE card_id = ?', [req.params.id]);
+
+      query('DELETE FROM prompt_cards WHERE id = ?', [req.params.id]);
+
+      const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [taskId]);
+      query('UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
+        parseInt(countResult.rows[0].count), taskId
+      ]);
+    });
 
     return res.json({ message: '卡片已删除' });
   } catch {
@@ -733,26 +745,28 @@ workspaceRouter.post('/cards/batch-delete', authMiddleware, async (req: AuthRequ
     const taskIds = [...new Set(cardCheck.rows.map((r: any) => r.task_id))];
     const ownedPlaceholders = ownedIds.map(() => '?').join(',');
 
-    query(
-      `UPDATE prompt_cards
-       SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP
-       WHERE id IN (${ownedPlaceholders}) AND selected_image_id IS NOT NULL`,
-      ownedIds
-    );
+    transaction(() => {
+      query(
+        `UPDATE prompt_cards
+         SET selected_image_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id IN (${ownedPlaceholders}) AND selected_image_id IS NOT NULL`,
+        ownedIds
+      );
 
-    query(`DELETE FROM workspace_api_logs WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
-    query(`DELETE FROM chat_tasks WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
+      query(`DELETE FROM workspace_api_logs WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
+      query(`DELETE FROM chat_tasks WHERE card_id IN (${ownedPlaceholders})`, ownedIds);
 
-    query(`DELETE FROM prompt_cards WHERE id IN (${ownedPlaceholders})`, ownedIds);
+      query(`DELETE FROM prompt_cards WHERE id IN (${ownedPlaceholders})`, ownedIds);
 
-    for (const taskId of taskIds) {
-      const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [taskId]);
-      query('UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
-        parseInt(countResult.rows[0].count), taskId
-      ]);
-    }
+      for (const taskId of taskIds) {
+        const countResult = query('SELECT COUNT(*) as count FROM prompt_cards WHERE task_id = ?', [taskId]);
+        query('UPDATE workspace_tasks SET card_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
+          parseInt(countResult.rows[0].count), taskId
+        ]);
+      }
+    });
 
-    return res.json({ message: `已删除 ${ownedIds.length} 张卡片` });
+    return res.json({ message: `已删除 ${ownedIds.length} 张卡片`, deleted_count: ownedIds.length, deleted_ids: ownedIds, task_ids: taskIds });
   } catch {
     return res.status(500).json({ error: '批量删除失败' });
   }

@@ -45,6 +45,19 @@ const emptyForm = {
   api_timeout: '120',
 }
 
+const columnLabels = {
+  icon: '图标',
+  name: '名称',
+  endpoint: 'API 地址',
+  model: '模型标识',
+  max_concurrent: '最大并发',
+  max_retries: '重试次数',
+  api_timeout: '超时(秒)',
+  format_type: '接口格式',
+  status: '状态',
+  actions: '操作',
+}
+
 export default function AdminChatApis({ prefixToolbar }: { prefixToolbar?: ReactNode }) {
   const [apis, setApis] = useState<ChatApi[]>([])
   const [loading, setLoading] = useState(false)
@@ -276,6 +289,7 @@ export default function AdminChatApis({ prefixToolbar }: { prefixToolbar?: React
           data={apis}
           searchPlaceholder="搜索对话模型名称..."
           searchColumn="name"
+          columnLabels={columnLabels}
           pageSize={10}
           toolbar={
             <div className="flex items-center gap-2">

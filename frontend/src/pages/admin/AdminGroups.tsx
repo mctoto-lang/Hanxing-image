@@ -71,6 +71,17 @@ const PAGE_OPTIONS = [
   { key: 'product', label: '商品主图' },
 ]
 
+const columnLabels = {
+  name: '名称',
+  description: '权限设置',
+  initial_creative_credits: '初始创作积分',
+  initial_project_credits: '初始项目积分',
+  max_concurrent: '最大并发',
+  priority: '优先级',
+  allowed_pages: '可查看页面',
+  actions: '操作',
+}
+
 export default function AdminGroups() {
   const [groups, setGroups] = useState<Group[]>([])
   const [models, setModels] = useState<Model[]>([])
@@ -335,6 +346,7 @@ export default function AdminGroups() {
             data={groups}
             searchPlaceholder="搜索权限组名称..."
             searchColumn="name"
+            columnLabels={columnLabels}
             pageSize={10}
             toolbar={
               <Button onClick={openCreateDialog}>

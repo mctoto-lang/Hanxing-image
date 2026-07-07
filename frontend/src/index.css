@@ -126,6 +126,20 @@
     }
   }
 
+  .animate-shimmer-text {
+    animation: shimmer-text 2.2s linear infinite;
+  }
+
+  @keyframes shimmer-text {
+    0% {
+      background-position: 180% 50%;
+    }
+
+    100% {
+      background-position: -80% 50%;
+    }
+  }
+
   .animate-placeholder-breathe {
     animation: placeholder-breathe 2.6s ease-in-out infinite;
   }

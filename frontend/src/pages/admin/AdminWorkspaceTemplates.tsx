@@ -45,6 +45,15 @@ type TemplateType = typeof TYPES[number]['key']
 
 const emptyForm = { name: '', type: 'fission', content: '', chat_api_id: '', fission_count: '' }
 
+const columnLabels = {
+  name: '模板名称',
+  api_name: '关联对话模型',
+  fission_count: '裂变数量',
+  content: '模板内容',
+  created_at: '创建时间',
+  actions: '操作',
+}
+
 export default function AdminWorkspaceTemplates() {
   const [activeType, setActiveType] = useState<TemplateType>('fission')
   const [templates, setTemplates] = useState<Template[]>([])
@@ -234,6 +243,7 @@ export default function AdminWorkspaceTemplates() {
               data={templates}
               searchPlaceholder="搜索模板名称..."
               searchColumn="name"
+              columnLabels={columnLabels}
               pageSize={10}
               toolbar={
                 <div className="flex items-center gap-2">

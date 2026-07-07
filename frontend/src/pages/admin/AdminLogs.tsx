@@ -94,6 +94,32 @@ interface ParsedError {
   retryInfo: string
 }
 
+const taskColumnLabels = {
+  username: '用户',
+  status: '状态',
+  retry_count: '重试次数',
+  credits_charged: '积分',
+  source: '类型',
+  created_at: '时间',
+  actions: '操作',
+}
+
+const chatColumnLabels = {
+  created_at: '时间',
+  username: '用户',
+  api_type: '类型',
+  api_config_name: '接口',
+  response_status: '状态',
+  duration_ms: '耗时',
+  actions: '操作',
+}
+
+const loginColumnLabels = {
+  username: '用户',
+  ip_address: 'IP 地址',
+  login_at: '登录时间',
+}
+
 function parseErrorMessage(errorMessage: string): ParsedError {
   let errorType = '请求失败'
   let coreMessage = errorMessage
@@ -285,6 +311,14 @@ export default function AdminLogs() {
       return <Badge variant="default">工作项目</Badge>
     }
     return <Badge variant="secondary">自由创作</Badge>
+  }
+
+  const getSourceLabel = (task: Pick<TaskLog, 'source' | 'task_type'>) => {
+    if (task.task_type === 'workspace_batch') return '批量多图'
+    if (task.task_type === 'workspace_single' || task.source === 'workspace') return '批量单图'
+    if (task.source === 'product') return '商品主图'
+    if (task.source === 'project') return '项目创作'
+    return '自由创作'
   }
 
   const openTaskDetail = async (task: TaskLog) => {
@@ -552,7 +586,7 @@ export default function AdminLogs() {
               data={taskLogs}
               searchPlaceholder="搜索用户名..."
               searchColumn="username"
-              showColumnToggle={false}
+              columnLabels={taskColumnLabels}
               pageSize={pageSize}
               pageIndex={pageIndex}
               onPageChange={setPageIndex}
@@ -568,7 +602,7 @@ export default function AdminLogs() {
               data={chatLogs}
               searchPlaceholder="搜索用户名..."
               searchColumn="username"
-              showColumnToggle={false}
+              columnLabels={chatColumnLabels}
               pageSize={pageSize}
               pageIndex={pageIndex}
               onPageChange={setPageIndex}
@@ -584,7 +618,7 @@ export default function AdminLogs() {
               data={loginLogs}
               searchPlaceholder="搜索用户名..."
               searchColumn="username"
-              showColumnToggle={false}
+              columnLabels={loginColumnLabels}
               pageSize={pageSize}
               pageIndex={pageIndex}
               onPageChange={setPageIndex}
@@ -750,6 +784,10 @@ export default function AdminLogs() {
                         const isPending = log.status === 'pending'
                         let requestParams: any = null
                         try { requestParams = log.request_params ? JSON.parse(log.request_params) : null } catch {}
+                        const sourceLabel = requestParams?.source_label || getSourceLabel({
+                          source: requestParams?.source || selectedTask.source,
+                          task_type: requestParams?.task_type || selectedTask.task_type,
+                        })
 
                         return (
                           <div key={log.id} className={`rounded-lg border overflow-hidden ${isSuccess ? 'border-green-200' : isPending ? 'border-yellow-200' : 'border-destructive/20'}`}>
@@ -769,6 +807,7 @@ export default function AdminLogs() {
                             <div className={`p-3 space-y-1.5 ${isSuccess ? 'bg-green-50/50' : isPending ? 'bg-yellow-50/50' : 'bg-destructive/10'}`}>
                               {requestParams && (
                                 <div className="flex gap-2 text-[10px] text-muted-foreground flex-wrap">
+                                  <span>来源: {sourceLabel}</span>
                                   {requestParams.model && <span>模型: {requestParams.model}</span>}
                                   {requestParams.format && <span>格式: {requestParams.format}</span>}
                                   {requestParams.size && <span>尺寸: {requestParams.size}</span>}
