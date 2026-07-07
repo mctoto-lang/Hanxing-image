@@ -1,4 +1,3 @@
-import { db } from './index.js';
 import { migrate } from './migrate.js';
 import { seed } from './seed.js';
 

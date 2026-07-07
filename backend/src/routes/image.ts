@@ -173,8 +173,8 @@ router.get('/thumb', async (req: Request, res: Response) => {
 
   // 判断模式：只传宽度时保持原始比例，同时传宽高时裁剪为指定尺寸
   const fitMode = height <= 0 ? 'inside' : 'cover'
-  let finalWidth = width
-  let finalHeight = height
+  const finalWidth = width
+  const finalHeight = height
   if (fitMode === 'cover') {
     // cover 模式：需要完整的尺寸校验
     const sizeKey = `${finalWidth}x${finalHeight}`

@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
@@ -538,7 +538,7 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
     const userResult = query('SELECT creative_credits FROM users WHERE id = ?', [userId]);
     const user = userResult.rows[0];
 
-    let taskIds: number[] = [];
+    const taskIds: number[] = [];
     let totalCost = 0;
 
     const result = transaction(() => {
@@ -615,7 +615,6 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
           }
         }
         const subTemplateIds = uniqueSelections.map(item => item.sub_template_id);
-        const mainTemplateIds = Array.from(new Set(uniqueSelections.map(item => item.main_template_id)));
         const subTemplatesResult = query(`
           SELECT st.*, mt.name as main_template_name, mt.visibility, mt.user_id as main_template_user_id
           FROM product_sub_templates st

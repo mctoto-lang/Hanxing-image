@@ -28,7 +28,6 @@ interface ChatApiConfig {
 }
 
 const DEFAULT_MAX_RETRIES = 3;
-const DEFAULT_API_TIMEOUT_MS = 120000;
 
 class ChatTaskQueue {
   private processing = false;
