@@ -2,6 +2,7 @@ import { X, Download, Copy, Check } from 'lucide-react'
 import { useState } from 'react'
 import { toImageSrc } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { toast } from 'sonner'
 
 interface PreviewItem {
   prompt?: string
@@ -26,7 +27,7 @@ function formatDateTime(dateStr: string | undefined): string {
   return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-async function handleDownload(imageUrl: string, filename?: string) {
+export async function downloadPreviewImage(imageUrl: string, filename?: string) {
   try {
     const src = toImageSrc(imageUrl)
     // base64 数据直接下载
@@ -101,7 +102,10 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
       await navigator.clipboard.writeText(item.prompt)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {}
+      toast.success('提示词已复制')
+    } catch {
+      toast.error('复制失败，请手动复制提示词')
+    }
   }
 
   if (!open || !imageUrl) return null
@@ -182,7 +186,7 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
           <Button
             variant="ghost"
             size="sm"
-            onClick={(e) => { e.stopPropagation(); handleDownload(imageUrl) }}
+            onClick={(e) => { e.stopPropagation(); void downloadPreviewImage(imageUrl) }}
             className="gap-1.5 rounded-lg bg-foreground/10 backdrop-blur-md text-foreground/80 hover:bg-foreground/20 hover:text-foreground border border-foreground/10 text-xs px-4 py-2"
           >
             <Download className="h-3.5 w-3.5" />

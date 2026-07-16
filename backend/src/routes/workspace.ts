@@ -543,10 +543,12 @@ workspaceRouter.get('/tasks/:id/cards', authMiddleware, async (req: AuthRequest,
     const offset = (page - 1) * pageSize;
 
     const cards = query(
-      `SELECT c.*, ci.id as sel_img_id, ci.image_url as sel_img_url, ci.size as sel_img_size, wl.api_config_name as sel_img_model_name
+      `SELECT c.*, ci.id as sel_img_id, ci.image_url as sel_img_url, ci.size as sel_img_size,
+       (SELECT wl.api_config_name FROM workspace_api_logs wl
+        WHERE wl.generation_task_id = ci.generation_task_id AND wl.api_type = 'image'
+        ORDER BY wl.id DESC LIMIT 1) as sel_img_model_name
        FROM prompt_cards c
        LEFT JOIN card_images ci ON c.selected_image_id = ci.id
-       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
        WHERE c.task_id = ? ORDER BY c.card_index ASC LIMIT ? OFFSET ?`,
       [req.params.id, pageSize, offset]
     );
@@ -572,11 +574,13 @@ workspaceRouter.get('/tasks/:id/card-images', authMiddleware, async (req: AuthRe
     if (!taskCheck.rows[0]) return res.status(404).json({ error: '任务不存在' });
 
     const rows = query(
-      `SELECT ci.*, gt.started_at as generation_started_at, gt.completed_at as generation_completed_at, wl.api_config_name as model_name_from_log
+      `SELECT ci.*, gt.started_at as generation_started_at, gt.completed_at as generation_completed_at,
+       (SELECT wl.api_config_name FROM workspace_api_logs wl
+        WHERE wl.generation_task_id = ci.generation_task_id AND wl.api_type = 'image'
+        ORDER BY wl.id DESC LIMIT 1) as model_name_from_log
        FROM card_images ci
        JOIN prompt_cards pc ON ci.card_id = pc.id
        LEFT JOIN generation_tasks gt ON ci.generation_task_id = gt.id
-       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
        WHERE pc.task_id = ?
        ORDER BY pc.card_index ASC, ci.created_at ASC, ci.id ASC`,
       [req.params.id]
@@ -1145,9 +1149,11 @@ workspaceRouter.get('/cards/:id/images', authMiddleware, async (req: AuthRequest
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
     const images = query(
-      `SELECT ci.*, wl.api_config_name as model_name
+      `SELECT ci.*,
+       (SELECT wl.api_config_name FROM workspace_api_logs wl
+        WHERE wl.generation_task_id = ci.generation_task_id AND wl.api_type = 'image'
+        ORDER BY wl.id DESC LIMIT 1) as model_name
        FROM card_images ci
-       LEFT JOIN workspace_api_logs wl ON ci.generation_task_id = wl.generation_task_id AND wl.api_type = 'image'
        WHERE ci.card_id = ? ORDER BY ci.created_at ASC`,
       [req.params.id]
     );

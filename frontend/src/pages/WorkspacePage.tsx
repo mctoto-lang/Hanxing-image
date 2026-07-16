@@ -183,7 +183,12 @@ export function mergeCardsWithImageSummary(
 ): PromptCard[] {
   const previousCardMap = new Map(previousCards.map(card => [card.id, card]))
 
-  return fetchedCards.map(card => {
+  // 按 card.id 去重，避免后端 JOIN 膨胀导致重复渲染
+  const dedupedCards = Array.from(
+    fetchedCards.reduce((map, card) => map.set(card.id, card), new Map<number, PromptCard>()).values()
+  )
+
+  return dedupedCards.map(card => {
     const summary = payload.cards[card.id]
     const selected = summary?.selected_image
     const previousCard = previousCardMap.get(card.id)
@@ -193,6 +198,8 @@ export function mergeCardsWithImageSummary(
       return {
         ...previousCard,
         ...card,
+        // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
+        prompt: previousCard.prompt,
         selected_image_id: card.selected_image_id ?? previousCard.selected_image_id,
         sel_img_id: card.sel_img_id ?? previousCard.sel_img_id,
         sel_img_url: card.sel_img_url ?? previousCard.sel_img_url,
@@ -207,6 +214,8 @@ export function mergeCardsWithImageSummary(
     return {
       ...previousCard,
       ...card,
+      // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
+      prompt: previousCard ? previousCard.prompt : card.prompt,
       selected_image_id: selected.id,
       sel_img_id: selected.id,
       sel_img_url: selected.image_url,
@@ -503,14 +512,16 @@ export default function WorkspacePage() {
       ])
       const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      setCards(prev => mergeCardsWithImageSummary(fetchedCards, imagesData, prev))
-      setCardImagesMap(buildCardImagesMap(imagesData, cardImagesMap))
+      // 竞态保护：如果请求返回后 activeTaskId 已变化，丢弃本次结果
+      if (activeTaskIdRef.current !== taskId) return
+      setCards(mergeCardsWithImageSummary(fetchedCards, imagesData, []))
+      setCardImagesMap(buildCardImagesMap(imagesData))
     } catch {
       toast.error('获取卡片列表失败')
     } finally {
       setLoadingCards(false)
     }
-  }, [cardImagesMap, fetchTaskCardImages])
+  }, [fetchTaskCardImages])
 
   const pollTaskStatus = useCallback(async (taskId: number) => {
     try {
@@ -521,8 +532,11 @@ export default function WorkspacePage() {
         pollingRef.current = null
         await fetchTasks(1)
         if (data.status === 'completed') {
-          await fetchCards(taskId)
-          setActiveTask(prev => prev ? { ...prev, status: data.status, card_count: data.card_count } : prev)
+          // 仅当用户仍在查看该任务时才刷新其卡片
+          if (activeTaskIdRef.current === taskId) {
+            await fetchCards(taskId)
+            setActiveTask(prev => prev ? { ...prev, status: data.status, card_count: data.card_count } : prev)
+          }
         }
       }
     } catch (e) {
@@ -534,14 +548,17 @@ export default function WorkspacePage() {
   // 统一轮询卡片图片状态：一次请求获取所有卡片数据，避免 N 个独立轮询
   const pollCardImages = useCallback(async () => {
     if (!activeTaskId) return
+    const currentTaskId = activeTaskId
     try {
       const [cardsRes, imagesData] = await Promise.all([
-        apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`),
-        fetchTaskCardImages(activeTaskId),
+        apiFetch(`/api/workspace/tasks/${currentTaskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`),
+        fetchTaskCardImages(currentTaskId),
       ])
       const data = await cardsRes.json()
       const fetchedCards: PromptCard[] = data.cards || []
-      const newImagesMap = buildCardImagesMap(imagesData, cardImagesMap)
+      // 竞态保护：如果请求返回后 activeTaskId 已变化，丢弃本次结果
+      if (activeTaskIdRef.current !== currentTaskId) return
+      const newImagesMap = buildCardImagesMap(imagesData)
 
       setCards(prev => mergeCardsWithImageSummary(fetchedCards, imagesData, prev))
       setCardImagesMap(newImagesMap)
@@ -576,7 +593,7 @@ export default function WorkspacePage() {
     } catch {
       // 轮询失败不中断
     }
-  }, [activeTaskId, cardImagesMap, fetchTaskCardImages])
+  }, [activeTaskId, fetchTaskCardImages])
 
   // 启动/停止卡片图片轮询
   const startCardImagesPoll = useCallback(() => {
@@ -608,14 +625,24 @@ export default function WorkspacePage() {
   const fetchCardsRef = useRef(fetchCards)
   const pollTaskStatusRef = useRef(pollTaskStatus)
   const stopCardImagesPollRef = useRef(stopCardImagesPoll)
+  const activeTaskIdRef = useRef<number | null>(null)
   useEffect(() => { fetchCardsRef.current = fetchCards })
   useEffect(() => { pollTaskStatusRef.current = pollTaskStatus })
   useEffect(() => { stopCardImagesPollRef.current = stopCardImagesPoll })
+  useEffect(() => { activeTaskIdRef.current = activeTaskId }, [activeTaskId])
 
   useEffect(() => {
     if (activeTaskId) {
       const task = tasks.find(t => t.id === activeTaskId)
       if (task) setActiveTask(task)
+      // 切换任务时停止所有旧轮询，清空旧数据，避免串显其他任务卡片
+      stopCardImagesPollRef.current()
+      if (batchPollRef.current) {
+        clearInterval(batchPollRef.current)
+        batchPollRef.current = null
+      }
+      setCards([])
+      setCardImagesMap(new Map())
       fetchCardsRef.current(activeTaskId)
       setSelectedCardIds(new Set())
       setGeneratingImageCardIds(new Set())
@@ -644,9 +671,9 @@ export default function WorkspacePage() {
     const task = tasks.find(t => t.id === activeTaskId)
     if (task) setActiveTask(task)
     if (task?.status === 'generating') {
-      if (!pollingRef.current) {
-        pollingRef.current = setInterval(() => pollTaskStatusRef.current(activeTaskId), 3000)
-      }
+      // 无条件重建定时器，确保轮询的是当前任务
+      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null }
+      pollingRef.current = setInterval(() => pollTaskStatusRef.current(activeTaskId), 3000)
     } else {
       if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null }
     }
@@ -839,6 +866,8 @@ export default function WorkspacePage() {
           const activeIds = [...remainingImageIds]
           const imagesData = await fetchTaskCardImages(activeTaskId)
 
+          // 竞态保护：如果请求返回后 activeTaskId 已变化，丢弃本次结果
+          if (activeTaskIdRef.current !== activeTaskId) return
           setCardImagesMap(prev => buildCardImagesMap(imagesData, prev))
           setCards(prev => mergeCardsWithImageSummary(prev, imagesData))
 

@@ -105,6 +105,8 @@ export default memo(function WorkspaceFlipCard({
   useEffect(() => { onCardUpdatedRef.current = onCardUpdated }, [onCardUpdated])
 
   useEffect(() => {
+    // 用户正在编辑时不重置本地 prompt，避免轮询打断输入
+    if (isEditingPromptRef.current) return
     setPrompt(card.prompt)
   }, [card.prompt])
 

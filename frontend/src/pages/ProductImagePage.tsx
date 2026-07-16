@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Loader2, Eye, ImagePlus, X, Plus, Tags, FilePlus2, Pencil, Trash2, Check, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react'
+import { Loader2, Eye, Download, ImagePlus, X, Plus, Tags, FilePlus2, Pencil, Trash2, Check, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react'
 import { HugeiconsIcon, Upload04Icon, Layers01Icon, File02Icon, Settings02Icon, Cancel01Icon, AlertCircleIcon, Image02Icon, CubeIcon, FolderKanbanIcon, StarsIcon, Loading03Icon, ArrowRight01Icon, ArrowUpDownIcon, Shield01Icon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -28,7 +28,7 @@ import { apiFetch, safeResponseJson } from '@/lib/api'
 import { uploadReferenceImages } from '@/lib/product-reference-upload'
 import { cn, toImageSrc } from '@/lib/utils'
 import { toast } from 'sonner'
-import ImagePreviewOverlay from '@/components/ImagePreviewOverlay'
+import ImagePreviewOverlay, { downloadPreviewImage } from '@/components/ImagePreviewOverlay'
 
 interface ModelSizeRatio {
   ratio: string
@@ -1394,12 +1394,20 @@ export default function ProductImagePage() {
   const handleSubTemplatePreviewUpload = async (files: FileList) => {
     const file = files.item(0)
     if (!file) return
+    const MAX_FILE_SIZE = 10 * 1024 * 1024
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error(`文件 ${file.name} 超过 10MB 限制`)
+      return
+    }
     setUploadingSubTemplatePreview(true)
     setSubTemplatePreviewUploadProgress(0)
     try {
-      const [url] = await uploadReferenceImages([file], {
+      const result = await uploadReferenceImages([file], {
         onProgress: (progress) => setSubTemplatePreviewUploadProgress(progress.percent),
       })
+      result.errors.forEach((message) => toast.error(message))
+      const url = result.uploads[0]?.url
+      if (!url) return
       setNewSubTemplatePreviewImageUrl(url)
       toast.success('预览图上传成功')
     } catch (error: any) {
@@ -1426,16 +1434,15 @@ export default function ProductImagePage() {
   const handleImageUpload = async (files: FileList) => {
     if (!selectedModel) return
     const maxImages = selectedModel.max_reference_images - referenceImages.length
-    if (files.length > maxImages) {
-      toast.error(`最多只能上传 ${selectedModel.max_reference_images} 张参考图`)
-      return
-    }
     const fileList = Array.from(files).slice(0, maxImages)
+    const skippedFiles = Array.from(files).slice(maxImages)
+    skippedFiles.forEach((file) => toast.error(`${file.name}：最多只能上传 ${selectedModel.max_reference_images} 张参考图`))
+    if (fileList.length === 0) return
     const uploadingItems = fileList.map((file, index) => buildUploadingReferenceItem(file, index))
     setUploadingReference(true)
     setReferenceImages(prev => [...prev, ...uploadingItems])
     try {
-      const uploadedUrls = await uploadReferenceImages(fileList, {
+      const result = await uploadReferenceImages(fileList, {
         onProgress: (progress) => {
           setReferenceImages(prev => prev.map((item) => {
             if (item.status !== 'uploading') return item
@@ -1446,8 +1453,11 @@ export default function ProductImagePage() {
       })
       setReferenceImages(prev => {
         const next = [...prev]
-        uploadedUrls.forEach((url, index) => {
-          const uploadItem = uploadingItems[index]
+        const uploadedItemIds = new Set<string>()
+        result.uploads.forEach(({ file, url }) => {
+          const uploadItem = uploadingItems[fileList.indexOf(file)]
+          if (!uploadItem) return
+          uploadedItemIds.add(uploadItem.id)
           const itemIndex = next.findIndex(item => item.id === uploadItem.id)
           if (itemIndex !== -1) {
             next[itemIndex] = {
@@ -1458,9 +1468,10 @@ export default function ProductImagePage() {
             }
           }
         })
-        return next
+        return next.filter(item => item.status !== 'uploading' || uploadedItemIds.has(item.id))
       })
-      toast.success(`已上传 ${uploadedUrls.length} 张参考图`)
+      if (result.uploads.length > 0) toast.success(`已上传 ${result.uploads.length} 张参考图`)
+      result.errors.forEach((message) => toast.error(message))
     } catch (error: any) {
       setReferenceImages(prev => prev.filter(item => !uploadingItems.some(uploadingItem => uploadingItem.id === item.id)))
       toast.error(error.message || '参考图上传失败')
@@ -1888,7 +1899,7 @@ export default function ProductImagePage() {
                 <input
                   ref={uploadInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,.png,.jpg,.jpeg"
                   multiple
                   className="hidden"
                   disabled={uploadingReference || !canUploadMore}
@@ -2182,8 +2193,19 @@ export default function ProductImagePage() {
                           draggable={false}
                           className="pointer-events-none h-full w-full rounded-sm object-contain shadow-md"
                         />
-                        {/* 悬浮操作：右上角眼睛和关闭按钮 */}
                         <div className="absolute -right-2 -top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            type="button"
+                            data-canvas-action="download"
+                            title="下载图片"
+                            className="flex h-7 w-7 items-center justify-center rounded-full bg-foreground text-background shadow-sm hover:bg-foreground/90"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void downloadPreviewImage(img.url)
+                            }}
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
                           <button
                             type="button"
                             data-canvas-action="preview"
@@ -2218,7 +2240,6 @@ export default function ProductImagePage() {
                             <HugeiconsIcon icon={Cancel01Icon} size={14} strokeWidth={2} />
                           </button>
                         </div>
-                        {/* 悬浮操作：右下角缩放按钮 */}
                         <div className="absolute -right-2 -bottom-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
                           <button
                             type="button"
@@ -2231,7 +2252,6 @@ export default function ProductImagePage() {
                             onPointerCancel={handleScalePointerUp}
                           >
                             <HugeiconsIcon icon={ArrowUpDownIcon} size={14} strokeWidth={2} />
-                            {/* 缩放时显示百分比 */}
                             {scaleStateRef.current.isScaling && scaleStateRef.current.imageId === img.id && (
                               <div className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-0.5 text-xs font-medium text-background shadow-md">
                                 {Math.round(img.scale * 100)}%
@@ -2248,7 +2268,7 @@ export default function ProductImagePage() {
             </Card>
 
             {/* 2. 生成记录（占比小） */}
-            <Card size="sm" className="flex flex-col overflow-hidden py-0 gap-0 data-[size=sm]:py-0 data-[size=sm]:gap-0" style={{ minHeight: '160px', maxHeight: '220px' }}>
+            <Card size="sm" className="flex h-[180px] flex-col overflow-hidden py-0 gap-0 data-[size=sm]:py-0 data-[size=sm]:gap-0">
               <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2">
                 <span className="text-sm font-semibold text-foreground">生成记录</span>
                 <div className="flex items-center gap-2">
@@ -2279,7 +2299,7 @@ export default function ProductImagePage() {
                   </span>
                 </div>
               </div>
-              <div className="flex-1 p-3">
+              <div className="min-h-0 flex-1 overflow-hidden p-3">
                 {historyLoading ? (
                   <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -2303,10 +2323,10 @@ export default function ProductImagePage() {
                         <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={1.9} style={{ transform: 'rotate(180deg)' }} className="text-muted-foreground" />
                       </button>
                     )}
-                    <div className="grid h-full w-full grid-cols-8 gap-2.5 px-5">
+                    <div className="grid h-full w-full grid-cols-8 grid-rows-1 justify-items-center gap-1.5 overflow-hidden px-5">
                       {recordSlots.map((slot, slotIndex) => {
                         if (slot.type === 'empty') {
-                          return <div key={slot.key} className="aspect-square w-full rounded-md" aria-hidden="true" />
+                          return <div key={slot.key} className="aspect-square h-full rounded-md" aria-hidden="true" />
                         }
 
                         const record = slot.record
@@ -2328,7 +2348,7 @@ export default function ProductImagePage() {
                           return (
                             <div
                               key={`pending-${task.id}-${slotIndex}`}
-                              className="flex aspect-square w-full items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
+                              className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
                               title="生成中..."
                             >
                               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -2340,7 +2360,7 @@ export default function ProductImagePage() {
                         return (
                           <div
                             key={`failed-${task.id}-${slotIndex}`}
-                            className="flex aspect-square w-full items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
+                            className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
                             title={task.error_message || '生成失败'}
                           >
                             <HugeiconsIcon icon={AlertCircleIcon} size={20} strokeWidth={1.7} className="text-destructive/70" />
@@ -2427,7 +2447,7 @@ function RecordThumbnail({
       type="button"
       onClick={onClick}
       className={cn(
-        'group relative aspect-square w-full overflow-hidden rounded-md border-2 bg-muted/20 leading-none transition',
+        'group relative aspect-square h-full overflow-hidden rounded-md border-2 bg-muted/20 leading-none transition',
         selected
           ? 'border-foreground'
           : 'border-transparent hover:border-border'

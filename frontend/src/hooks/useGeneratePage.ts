@@ -195,15 +195,18 @@ export function useGeneratePage(options: UseGeneratePageOptions) {
     setRefUploading(true)
     setRefUploadState({ uploadedCount: 0, totalCount: filesToUpload.length, percent: 0, currentFileName: '' })
     try {
-      const uploadedUrls = await uploadReferenceImages(filesToUpload, {
+      const result = await uploadReferenceImages(filesToUpload, {
         onProgress: (progress) => {
           setRefUploadState(progress)
         },
       })
-      setReferenceImages(prev => [...prev, ...uploadedUrls])
-      toast.success(`已上传 ${uploadedUrls.length} 张参考图`)
-    } catch (error: any) {
-      toast.error(error?.message || '参考图上传失败')
+      if (result.uploads.length > 0) {
+        setReferenceImages(prev => [...prev, ...result.uploads.map(({ url }) => url)])
+        toast.success(`已上传 ${result.uploads.length} 张参考图`)
+      }
+      result.errors.forEach((message) => toast.error(message))
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : '参考图上传失败')
     } finally {
       setRefUploading(false)
       setRefUploadState({ uploadedCount: 0, totalCount: 0, percent: 0, currentFileName: '' })
