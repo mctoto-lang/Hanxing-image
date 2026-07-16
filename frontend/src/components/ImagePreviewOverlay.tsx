@@ -1,6 +1,7 @@
 import { X, Download, Copy, Check } from 'lucide-react'
 import { useState } from 'react'
 import { toImageSrc } from '@/lib/utils'
+import { copyText } from '@/lib/clipboard'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 
@@ -98,12 +99,11 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
 
   const handleCopy = async () => {
     if (!item?.prompt) return
-    try {
-      await navigator.clipboard.writeText(item.prompt)
+    if (await copyText(item.prompt)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
       toast.success('提示词已复制')
-    } catch {
+    } else {
       toast.error('复制失败，请手动复制提示词')
     }
   }

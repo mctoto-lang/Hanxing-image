@@ -81,6 +81,12 @@ function parseJsonSafely(text: string) {
   }
 }
 
+export function getReferenceUploadError(status: number, data: Record<string, unknown>): string {
+  if (status === 413) return '图片文件超过 10MB 限制，请压缩后重试'
+  if (typeof data.error === 'string' && data.error) return data.error
+  return '参考图上传失败，请稍后重试'
+}
+
 function uploadSingleReferenceImage(
   file: File,
   onFileProgress?: (percent: number) => void,
@@ -115,7 +121,7 @@ function uploadSingleReferenceImage(
         return
       }
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error((data.error as string) || '参考图上传失败'))
+        reject(new Error(getReferenceUploadError(xhr.status, data)))
         return
       }
       if (typeof data.url !== 'string' || !data.url) {

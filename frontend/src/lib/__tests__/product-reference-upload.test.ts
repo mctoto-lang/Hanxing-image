@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateReferenceImages } from '../product-reference-upload'
+import { getReferenceUploadError, validateReferenceImages } from '../product-reference-upload'
 
 describe('validateReferenceImages', () => {
   it('keeps valid PNG and JPEG files while reporting every invalid file', async () => {
@@ -32,5 +32,11 @@ describe('validateReferenceImages', () => {
 
     expect(result.validFiles).toEqual([])
     expect(result.errors).toEqual(['broken.jpg：无法读取图片尺寸，请重新选择图片'])
+  })
+})
+
+describe('getReferenceUploadError', () => {
+  it('explains that a proxy rejected an oversized request', () => {
+    expect(getReferenceUploadError(413, {})).toBe('图片文件超过 10MB 限制，请压缩后重试')
   })
 })

@@ -30,7 +30,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?必须配置 ENCRYPTION_KEY 环境变量}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-HX2026ADMIN}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      - FRONTEND_URL=http://localhost
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost}
       - COS_SECRET_ID=${COS_SECRET_ID:-}
       - COS_SECRET_KEY=${COS_SECRET_KEY:-}
       - COS_BUCKET=${COS_BUCKET:-hanxing-image-1317363725}

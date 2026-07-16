@@ -11,11 +11,10 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 WORKDIR /app
 COPY package*.json ./
+ENV SHARP_LIBVIPS_NPM_API_MIRROR=https://registry.npmmirror.com/-/binary/sharp-libvips
 RUN npm config set registry https://registry.npmmirror.com && npm ci
 COPY . .
 
-# sharp包需要从GitHub下载预编译二进制文件，配置国内加速镜像
-ENV SHARP_LIBVIPS_NPM_API_MIRROR=https://registry.npmmirror.com/-/binary/sharp-libvips
 RUN npm run build
 
 FROM docker.m.daocloud.io/library/node:22-alpine
