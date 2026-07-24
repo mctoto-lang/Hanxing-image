@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
-import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp, Replace, Languages } from 'lucide-react'
+import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp, Replace, Languages, LibraryBig } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -30,6 +30,7 @@ import WorkspaceBatchConfirmDialog from '@/components/workspace/WorkspaceBatchCo
 import WorkspaceGenerationConfigDialog from '@/components/workspace/WorkspaceGenerationConfigDialog'
 import WorkspaceBatchReplacePromptDialog from '@/components/workspace/WorkspaceBatchReplacePromptDialog'
 import WorkspaceBatchImageUploadDialog from '@/components/workspace/WorkspaceBatchImageUploadDialog'
+import WorkspaceTemplateManagementDialog from '@/components/workspace/WorkspaceTemplateManagementDialog'
 import { QueueStatusBadge } from '@/components/QueueStatusBadge'
 
 export interface WorkspaceTask {
@@ -120,6 +121,9 @@ export interface Template {
   chat_api_id: number
   api_name: string | null
   fission_count: number | null
+  owner_id?: number | null
+  visibility?: 'private' | 'public'
+  status?: 'active' | 'archived'
   created_at: string
 }
 
@@ -531,6 +535,8 @@ export default function WorkspacePage() {
   const [showModelDialog, setShowModelDialog] = useState(false)
   const [showSizeDialog, setShowSizeDialog] = useState(false)
   const [showGenerationConfigDialog, setShowGenerationConfigDialog] = useState(false)
+  const [showTemplateManagementDialog, setShowTemplateManagementDialog] = useState(false)
+  const [generationConfigRefreshKey, setGenerationConfigRefreshKey] = useState(0)
   const [showBatchReplacePromptDialog, setShowBatchReplacePromptDialog] = useState(false)
   const [showBatchImageUploadDialog, setShowBatchImageUploadDialog] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
@@ -1398,6 +1404,10 @@ export default function WorkspacePage() {
             <div className="text-center space-y-2">
               <ImagePlus className="h-12 w-12 mx-auto opacity-20" />
               <p className="text-sm">选择左侧任务，或新建任务开始工作</p>
+              <div className="flex items-center justify-center gap-2">
+                <Button size="sm" onClick={() => setShowNewTask(true)}><Plus className="h-4 w-4" />新建任务</Button>
+                <Button variant="outline" size="sm" onClick={() => setShowTemplateManagementDialog(true)}><LibraryBig className="h-4 w-4" />模板管理</Button>
+              </div>
             </div>
           </div>
         ) : (
@@ -1416,7 +1426,7 @@ export default function WorkspacePage() {
               )}
               <Button
                 size="sm"
-                className="h-7 text-xs gap-1 rounded-lg mr-4 bg-blue-600 text-white hover:bg-blue-700"
+                className="h-7 text-xs gap-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
                 onClick={() => setShowGenerationConfigDialog(true)}
               >
                 生成配置
@@ -1426,6 +1436,10 @@ export default function WorkspacePage() {
                     : '未选择'}
                 </span>
                 <ChevronDown className="h-3 w-3" />
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs gap-1 rounded-lg" onClick={() => setShowTemplateManagementDialog(true)}>
+                <LibraryBig className="h-3.5 w-3.5" />
+                模板管理
               </Button>
 
               <div className="flex items-center gap-1 ml-auto">
@@ -1750,6 +1764,7 @@ export default function WorkspacePage() {
 
       <WorkspaceGenerationConfigDialog
         open={showGenerationConfigDialog}
+        refreshKey={generationConfigRefreshKey}
         selectedFissionTemplate={selectedFissionTemplate}
         selectedRefineTemplate={selectedDeepenTemplate}
         selectedRegenTemplate={selectedRegenTemplate}
@@ -1768,6 +1783,11 @@ export default function WorkspacePage() {
           saveStoredGenerationConfig(config)
         }}
         onClose={() => setShowGenerationConfigDialog(false)}
+      />
+      <WorkspaceTemplateManagementDialog
+        open={showTemplateManagementDialog}
+        onClose={() => setShowTemplateManagementDialog(false)}
+        onChanged={() => setGenerationConfigRefreshKey(current => current + 1)}
       />
 
       <WorkspaceBatchReplacePromptDialog

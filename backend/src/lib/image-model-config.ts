@@ -182,8 +182,12 @@ export function buildGrsRequestBody(input: BuildGrsRequestInput): Record<string,
   const body: Record<string, unknown> = {
     model: input.model,
     prompt: input.prompt,
-    aspectRatio: input.extraConfig.grs_model_family === 'gpt' ? input.imageSize : sizeToRatio(input.imageSize),
     replyType: input.extraConfig.reply_type || 'json',
+  }
+  if (input.extraConfig.grs_model_family === 'gpt') {
+    body.size = input.imageSize
+  } else {
+    body.aspectRatio = sizeToRatio(input.imageSize)
   }
   if (input.extraConfig.grs_model_family === 'gemini' && input.extraConfig.image_size_grs) {
     body.imageSize = input.extraConfig.image_size_grs

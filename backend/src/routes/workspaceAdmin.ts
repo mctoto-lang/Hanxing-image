@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query } from '../db/index.js';
 import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middleware/auth.js';
 import { encrypt } from '../services/crypto.js';
+import { validateWorkspaceTemplateInput } from '../lib/workspace-template-access.js';
 
 export const workspaceAdminRouter = Router();
 
@@ -75,7 +76,7 @@ workspaceAdminRouter.delete('/chat-apis/:id', async (req, res) => {
 workspaceAdminRouter.get('/templates', async (req, res) => {
   try {
     const type = req.query.type as string;
-    let sql = `SELECT pt.*, c.name as api_name FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id`;
+    let sql = `SELECT pt.*, c.name as api_name, u.username as owner_name FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id LEFT JOIN users u ON pt.owner_id = u.id`;
     const params: any[] = [];
     if (type) { sql += ' WHERE pt.type = ?'; params.push(type); }
     sql += ' ORDER BY pt.created_at DESC';
@@ -88,25 +89,19 @@ workspaceAdminRouter.get('/templates', async (req, res) => {
 
 workspaceAdminRouter.post('/templates', async (req, res) => {
   try {
-    const { type, name, content, chat_api_id, fission_count } = req.body;
-    if (!type || !name || !content || !chat_api_id) {
-      return res.status(400).json({ error: '模板类型、名称、内容和关联API不能为空' });
-    }
-    if (!['fission', 'deepen', 'regenerate', 'extract', 'translate'].includes(type)) {
-      return res.status(400).json({ error: '模板类型必须为 fission / deepen / regenerate / extract / translate' });
-    }
+    const input = validateWorkspaceTemplateInput(req.body, true);
 
     const result = query(
-      `INSERT INTO prompt_templates (type, name, content, chat_api_id, fission_count) VALUES (?, ?, ?, ?, ?)`,
-      [type, name, content, chat_api_id, fission_count || null]
+      `INSERT INTO prompt_templates (type, name, content, chat_api_id, fission_count, owner_id, visibility, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.type, input.name, input.content, input.chat_api_id, input.fission_count ?? null, req.body.owner_id ?? null, input.visibility ?? 'public', input.status ?? 'active']
     );
     const created = query(
       `SELECT pt.*, c.name as api_name FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ?`,
       [result.lastInsertRowid]
     );
     return res.status(201).json({ template: created.rows[0] });
-  } catch {
-    return res.status(500).json({ error: '创建模板失败' });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
   }
 });
 
@@ -115,21 +110,20 @@ workspaceAdminRouter.patch('/templates/:id', async (req, res) => {
     const existing = query('SELECT id FROM prompt_templates WHERE id = ?', [req.params.id]);
     if (!existing.rows[0]) return res.status(404).json({ error: '模板不存在' });
 
-    const { name, content, chat_api_id, fission_count, status } = req.body;
+    const input = validateWorkspaceTemplateInput(req.body, false);
     const fields: string[] = [];
     const params: any[] = [];
-    if (name !== undefined) { fields.push('name = ?'); params.push(name); }
-    if (content !== undefined) { fields.push('content = ?'); params.push(content); }
-    if (chat_api_id !== undefined) { fields.push('chat_api_id = ?'); params.push(chat_api_id); }
-    if (fission_count !== undefined) { fields.push('fission_count = ?'); params.push(fission_count); }
-    if (status !== undefined) { fields.push('status = ?'); params.push(status); }
+    for (const field of ['type', 'name', 'content', 'chat_api_id', 'fission_count', 'visibility', 'status']) {
+      if (input[field] !== undefined) { fields.push(`${field} = ?`); params.push(input[field]); }
+    }
+    if (req.body.owner_id !== undefined) { fields.push('owner_id = ?'); params.push(req.body.owner_id || null); }
     fields.push('updated_at = CURRENT_TIMESTAMP');
     params.push(req.params.id);
 
     query(`UPDATE prompt_templates SET ${fields.join(', ')} WHERE id = ?`, params);
     return res.json({ message: '已更新' });
-  } catch {
-    return res.status(500).json({ error: '更新模板失败' });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
   }
 });
 

@@ -88,7 +88,7 @@ describe('GRS 请求字段和尺寸构造', () => {
     assert.equal(buildGrsRequestBody({ ...baseInput, referenceImageField: 'base_url' }).images, undefined)
   })
 
-  it('GPT 模型族使用像素尺寸且不发送 imageSize', () => {
+  it('GPT 模型族使用 size 字段传递像素尺寸', () => {
     assert.deepEqual(buildGrsRequestBody({
       model: 'gpt-image-2',
       prompt: '海边日落',
@@ -98,7 +98,7 @@ describe('GRS 请求字段和尺寸构造', () => {
     }), {
       model: 'gpt-image-2',
       prompt: '海边日落',
-      aspectRatio: '1536x1024',
+      size: '1536x1024',
       replyType: 'json',
       images: ['https://example.com/a.png'],
     })

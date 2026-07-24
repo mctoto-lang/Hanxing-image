@@ -1,4 +1,5 @@
 import { query } from '../db/index.js';
+import { getExecutableWorkspaceTemplate } from '../lib/workspace-template-access.js';
 import { decrypt } from './crypto.js';
 
 interface ChatTask {
@@ -110,11 +111,7 @@ class ChatTaskQueue {
     const apiTimeoutMs = (api?.api_timeout || 120) * 1000;
 
     // 获取模板内容
-    const templateResult = query(
-      'SELECT * FROM prompt_templates WHERE id = ?',
-      [task.template_id]
-    );
-    const template = templateResult.rows[0];
+    const template = getExecutableWorkspaceTemplate(task.template_id, task.task_type, task.user_id);
 
     try {
       query(

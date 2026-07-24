@@ -14,6 +14,7 @@ import { normalizeWorkspaceReferenceImages, parseWorkspaceReferenceImages } from
 import { normalizeBatchImageRequest, validateCustomTaskRequest } from '../lib/workspace-batch-images.js';
 import { validateGenerationCapabilities } from '../lib/image-model-config.js';
 import { workspaceImageHistoryQuery } from './workspace-history-query.js';
+import { canManageWorkspaceTemplate, canViewWorkspaceTemplate, getExecutableWorkspaceTemplate, isWorkspaceAdmin, validateWorkspaceTemplateInput } from '../lib/workspace-template-access.js';
 
 export const workspaceRouter = Router();
 
@@ -438,6 +439,8 @@ workspaceRouter.post('/tasks', authMiddleware, async (req: AuthRequest, res) => 
     if (!title || !theme_prompt || !promptTemplateId) {
       return res.status(400).json({ error: taskMode === 'extract' ? '任务标题、长提示词和提取模板不能为空' : '任务标题、主题提示词和裂变模板不能为空' });
     }
+    const executableTemplate = getExecutableWorkspaceTemplate(Number(promptTemplateId), taskMode === 'extract' ? 'extract' : 'fission', req.userId!);
+    if (!executableTemplate) return res.status(404).json({ error: '模板不存在或不可用' });
 
     const insertResult = query(
       `INSERT INTO workspace_tasks (user_id, title, theme_prompt, template_id, status, card_count)
@@ -559,7 +562,7 @@ workspaceRouter.patch('/tasks/:id', authMiddleware, async (req: AuthRequest, res
   }
 });
 
-workspaceRouter.get('/templates', authMiddleware, async (req, res) => {
+workspaceRouter.get('/templates', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const type = req.query.type as string;
     if (!['fission', 'deepen', 'regenerate', 'extract', 'translate'].includes(type)) {
@@ -568,12 +571,83 @@ workspaceRouter.get('/templates', authMiddleware, async (req, res) => {
     const result = query(
       `SELECT pt.*, c.name as api_name FROM prompt_templates pt
        JOIN chat_api_configs c ON pt.chat_api_id = c.id
-       WHERE pt.type = ? AND c.status = 'active' ORDER BY pt.created_at DESC`,
-      [type]
+       WHERE pt.type = ? AND pt.status = 'active' AND c.status = 'active'
+         AND (pt.visibility = 'public' OR pt.owner_id = ?)
+       ORDER BY pt.created_at DESC`,
+      [type, req.userId]
     );
     return res.json({ templates: result.rows });
   } catch {
     return res.status(500).json({ error: '获取模板列表失败' });
+  }
+});
+
+workspaceRouter.get('/chat-apis', authMiddleware, async (_req, res) => {
+  try {
+    const result = query("SELECT id, name FROM chat_api_configs WHERE status = 'active' ORDER BY name ASC");
+    return res.json({ apis: result.rows });
+  } catch {
+    return res.status(500).json({ error: '获取对话API失败' });
+  }
+});
+
+workspaceRouter.get('/templates/:id', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const template = query(
+      `SELECT pt.*, c.name as api_name FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ?`,
+      [req.params.id]
+    ).rows[0];
+    if (!template) return res.status(404).json({ error: '模板不存在' });
+    if (!canViewWorkspaceTemplate(template, req.userId!, isWorkspaceAdmin(req.userId!))) return res.status(403).json({ error: '无权访问此模板' });
+    return res.json({ template });
+  } catch {
+    return res.status(500).json({ error: '获取模板失败' });
+  }
+});
+
+workspaceRouter.post('/templates', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const input = validateWorkspaceTemplateInput(req.body, true);
+    const result = query(
+      `INSERT INTO prompt_templates (type, name, content, chat_api_id, fission_count, owner_id, visibility, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [input.type, input.name, input.content, input.chat_api_id, input.fission_count ?? null, req.userId, input.visibility ?? 'private']
+    );
+    const template = query('SELECT * FROM prompt_templates WHERE id = ?', [result.lastInsertRowid]).rows[0];
+    return res.status(201).json({ template });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+workspaceRouter.patch('/templates/:id', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const template = query('SELECT * FROM prompt_templates WHERE id = ?', [req.params.id]).rows[0];
+    if (!template) return res.status(404).json({ error: '模板不存在' });
+    if (!canManageWorkspaceTemplate(template, req.userId!, isWorkspaceAdmin(req.userId!))) return res.status(403).json({ error: '无权修改此模板' });
+    const input = validateWorkspaceTemplateInput(req.body, false);
+    const allowedFields = ['type', 'name', 'content', 'chat_api_id', 'fission_count', 'visibility'];
+    const fields = allowedFields.filter(field => input[field] !== undefined);
+    if (fields.length === 0) return res.status(400).json({ error: '没有可更新的字段' });
+    query(
+      `UPDATE prompt_templates SET ${fields.map(field => `${field} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [...fields.map(field => input[field]), req.params.id]
+    );
+    return res.json({ template: query('SELECT * FROM prompt_templates WHERE id = ?', [req.params.id]).rows[0] });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+workspaceRouter.delete('/templates/:id', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const template = query('SELECT * FROM prompt_templates WHERE id = ?', [req.params.id]).rows[0];
+    if (!template) return res.status(404).json({ error: '模板不存在' });
+    if (!canManageWorkspaceTemplate(template, req.userId!, isWorkspaceAdmin(req.userId!))) return res.status(403).json({ error: '无权归档此模板' });
+    query("UPDATE prompt_templates SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [req.params.id]);
+    return res.json({ message: '已归档' });
+  } catch {
+    return res.status(500).json({ error: '归档模板失败' });
   }
 });
 
@@ -602,10 +676,7 @@ workspaceRouter.post('/cards/batch-translate-prompt', authMiddleware, async (req
   try {
     const { card_ids, template_id } = req.body;
     if (!Array.isArray(card_ids) || card_ids.length === 0 || !template_id) return res.status(400).json({ error: '参数不完整' });
-    const template = query(
-      "SELECT pt.chat_api_id FROM prompt_templates pt JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = 'translate' AND c.status = 'active'",
-      [template_id]
-    ).rows[0];
+    const template = getExecutableWorkspaceTemplate(Number(template_id), 'translate', req.userId!);
     if (!template) return res.status(404).json({ error: '提示词翻译模板不存在或不可用' });
     const placeholders = card_ids.map(() => '?').join(',');
     const cards = query(
@@ -1103,7 +1174,7 @@ workspaceRouter.post('/cards/:id/regenerate-prompt', authMiddleware, async (req:
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
-    const newPrompt = await deepenPrompt(template_id, prompt, parseInt(req.params.id as string), cardCheck.rows[0].task_id, req.userId!);
+    const newPrompt = await deepenPrompt(template_id, prompt, parseInt(req.params.id as string), cardCheck.rows[0].task_id, req.userId!, 'regenerate');
 
     query(
       'UPDATE prompt_cards SET prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -1208,11 +1279,7 @@ workspaceRouter.post('/cards/batch-deepen', authMiddleware, async (req: AuthRequ
     }
 
     // 检查模板是否存在并获取关联的chat_api_id
-    const templateResult = query(
-      'SELECT pt.*, c.max_concurrent, c.max_retries, c.api_timeout FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ?',
-      [template_id]
-    );
-    const template = templateResult.rows[0];
+    const template = getExecutableWorkspaceTemplate(Number(template_id), 'deepen', req.userId!);
     if (!template) return res.status(404).json({ error: '模板不存在' });
     if (!template.chat_api_id) return res.status(400).json({ error: '模板未关联对话API' });
 
@@ -1264,11 +1331,7 @@ workspaceRouter.post('/cards/batch-regenerate-prompt', authMiddleware, async (re
     }
 
     // 检查模板是否存在并获取关联的chat_api_id
-    const templateResult = query(
-      'SELECT pt.*, c.max_concurrent, c.max_retries, c.api_timeout FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ?',
-      [template_id]
-    );
-    const template = templateResult.rows[0];
+    const template = getExecutableWorkspaceTemplate(Number(template_id), 'regenerate', req.userId!);
     if (!template) return res.status(404).json({ error: '模板不存在' });
     if (!template.chat_api_id) return res.status(400).json({ error: '模板未关联对话API' });
 

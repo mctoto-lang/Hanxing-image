@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -11,6 +12,7 @@ import type { Template, ImageModel } from '@/pages/WorkspacePage'
 
 interface Props {
   open: boolean
+  refreshKey?: number
   selectedFissionTemplate: Template | null
   selectedRefineTemplate: Template | null
   selectedRegenTemplate: Template | null
@@ -38,6 +40,13 @@ const DEFAULT_SIZES = [
   { label: '16:9 横屏', value: '1920x1080' },
 ]
 
+export function getGenerationConfigGroups() {
+  return [
+    { title: '提示词配置', fields: ['fission', 'deepen', 'regenerate', 'extract', 'translate'] },
+    { title: '图片配置', fields: ['model', 'size'] },
+  ] as const
+}
+
 function getModelSizes(model: ImageModel | null) {
   return model?.supported_sizes?.ratios?.map(r => ({
     label: `${r.ratio} (${r.width}×${r.height})`,
@@ -47,6 +56,7 @@ function getModelSizes(model: ImageModel | null) {
 
 export default function WorkspaceGenerationConfigDialog({
   open,
+  refreshKey = 0,
   selectedFissionTemplate,
   selectedRefineTemplate,
   selectedRegenTemplate,
@@ -111,6 +121,19 @@ export default function WorkspaceGenerationConfigDialog({
     description: s.value,
   })), [sizes])
 
+  const fetchOptions = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [fissionRes, refineRes, regenRes, extractRes, translateRes, modelsRes] = await Promise.all([
+        apiFetch('/api/workspace/templates?type=fission'), apiFetch('/api/workspace/templates?type=deepen'),
+        apiFetch('/api/workspace/templates?type=regenerate'), apiFetch('/api/workspace/templates?type=extract'),
+        apiFetch('/api/workspace/templates?type=translate'), apiFetch('/api/models?source=workspace'),
+      ])
+      const [fissionData, refineData, regenData, extractData, translateData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), extractRes.json(), translateRes.json(), modelsRes.json()])
+      setFissionTemplates(fissionData.templates || []); setRefineTemplates(refineData.templates || []); setRegenTemplates(regenData.templates || []); setExtractTemplates(extractData.templates || []); setTranslateTemplates(translateData.templates || []); setModels(modelsData.models || [])
+    } catch { toast.error('获取生成配置失败') } finally { setLoading(false) }
+  }, [])
+
   useEffect(() => {
     if (!open) return
     setFissionTemplateId(selectedFissionTemplate ? String(selectedFissionTemplate.id) : '')
@@ -121,38 +144,13 @@ export default function WorkspaceGenerationConfigDialog({
     setImageModelId(selectedImageModel ? String(selectedImageModel.id) : '')
     setSize(selectedSize || '')
     fetchOptions()
-  }, [open])
+  }, [open, refreshKey, fetchOptions])
 
   useEffect(() => {
     if (!open) return
     if (selectedImageModel && String(selectedImageModel.id) === imageModelId) return
     setSize('')
   }, [imageModelId])
-
-  const fetchOptions = async () => {
-    setLoading(true)
-    try {
-      const [fissionRes, refineRes, regenRes, extractRes, translateRes, modelsRes] = await Promise.all([
-        apiFetch('/api/workspace/templates?type=fission'),
-        apiFetch('/api/workspace/templates?type=deepen'),
-        apiFetch('/api/workspace/templates?type=regenerate'),
-        apiFetch('/api/workspace/templates?type=extract'),
-        apiFetch('/api/workspace/templates?type=translate'),
-        apiFetch('/api/models?source=workspace'),
-      ])
-      const [fissionData, refineData, regenData, extractData, translateData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), extractRes.json(), translateRes.json(), modelsRes.json()])
-      setFissionTemplates(fissionData.templates || [])
-      setRefineTemplates(refineData.templates || [])
-      setRegenTemplates(regenData.templates || [])
-      setExtractTemplates(extractData.templates || [])
-      setTranslateTemplates(translateData.templates || [])
-      setModels(modelsData.models || [])
-    } catch {
-      toast.error('获取生成配置失败')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const handleApply = () => {
     onApply({
@@ -170,11 +168,12 @@ export default function WorkspaceGenerationConfigDialog({
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
       <DialogContent className="max-w-3xl">
-        <DialogHeader><DialogTitle>生成配置</DialogTitle></DialogHeader>
+        <DialogHeader><div className="flex items-center justify-between gap-3"><DialogTitle>生成配置</DialogTitle><Button variant="outline" size="sm" onClick={fetchOptions} disabled={loading}><RefreshCw className="h-4 w-4" />刷新</Button></div></DialogHeader>
         {loading ? (
           <div className="flex items-center justify-center py-10"><Spinner /></div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 py-2">
+          <div className="space-y-5 py-2">
+            <section className="space-y-3"><h3 className="text-sm font-medium">提示词配置</h3><div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>裂变模板</Label>
               <Combobox
@@ -188,6 +187,8 @@ export default function WorkspaceGenerationConfigDialog({
                 contentClassName="min-w-[360px]"
               />
             </div>
+            </div></section>
+            <section className="space-y-3"><h3 className="text-sm font-medium">图片配置</h3><div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>细化模板</Label>
               <Combobox
@@ -267,6 +268,7 @@ export default function WorkspaceGenerationConfigDialog({
                 contentClassName="min-w-[360px]"
               />
             </div>
+            </div></section>
           </div>
         )}
         <DialogFooter>

@@ -1,5 +1,6 @@
 import { query } from '../db/index.js';
 import { decrypt } from './crypto.js';
+import { getExecutableWorkspaceTemplate } from '../lib/workspace-template-access.js';
 
 const DEFAULT_API_TIMEOUT_MS = 120000;
 
@@ -128,11 +129,7 @@ export async function fissionPrompts(
   workspaceTaskId: number,
   userId: number
 ): Promise<string[]> {
-  const templateResult = query(
-    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = ?',
-    [templateId, 'fission']
-  );
-  const template = templateResult.rows[0];
+  const template = getExecutableWorkspaceTemplate(templateId, 'fission', userId);
   if (!template) throw new Error('裂变模板不存在');
   if (!template.api_key) throw new Error('裂变模板未关联可用的对话模型');
 
@@ -181,11 +178,7 @@ export async function extractPromptDescriptions(
   workspaceTaskId: number,
   userId: number
 ): Promise<string[]> {
-  const templateResult = query(
-    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = ?',
-    [templateId, 'extract']
-  );
-  const template = templateResult.rows[0];
+  const template = getExecutableWorkspaceTemplate(templateId, 'extract', userId);
   if (!template) throw new Error('提取提示词模板不存在');
   if (!template.api_key) throw new Error('提取提示词模板未关联可用的对话模型');
 
@@ -231,11 +224,7 @@ export async function extractNumberedPromptReplacements(
   workspaceTaskId: number,
   userId: number
 ): Promise<NumberedPromptItem[]> {
-  const templateResult = query(
-    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = ?',
-    [templateId, 'extract']
-  );
-  const template = templateResult.rows[0];
+  const template = getExecutableWorkspaceTemplate(templateId, 'extract', userId);
   if (!template) throw new Error('提取提示词模板不存在');
   if (!template.api_key) throw new Error('提取提示词模板未关联可用的对话模型');
 
@@ -280,13 +269,10 @@ export async function deepenPrompt(
   currentPrompt: string,
   cardId: number,
   workspaceTaskId: number,
-  userId: number
+  userId: number,
+  templateType: 'deepen' | 'regenerate' = 'deepen'
 ): Promise<string> {
-  const templateResult = query(
-    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ?',
-    [templateId]
-  );
-  const template = templateResult.rows[0];
+  const template = getExecutableWorkspaceTemplate(templateId, templateType, userId);
   if (!template) throw new Error('模板不存在');
   if (!template.api_key) throw new Error('模板未关联可用的对话模型');
 
@@ -333,11 +319,7 @@ export async function translatePrompt(
   workspaceTaskId: number,
   userId: number
 ): Promise<string> {
-  const templateResult = query(
-    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = ?',
-    [templateId, 'translate']
-  );
-  const template = templateResult.rows[0];
+  const template = getExecutableWorkspaceTemplate(templateId, 'translate', userId);
   if (!template) throw new Error('提示词翻译模板不存在');
   if (!template.api_key) throw new Error('提示词翻译模板未关联可用的对话模型');
 

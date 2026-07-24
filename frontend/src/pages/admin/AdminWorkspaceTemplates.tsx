@@ -29,6 +29,10 @@ interface Template {
   chat_api_id: number
   api_name: string | null
   fission_count: number | null
+  owner_id: number | null
+  owner_name: string | null
+  visibility: 'private' | 'public'
+  status: 'active' | 'archived'
   created_at: string
 }
 
@@ -44,7 +48,15 @@ const TYPES = [
 
 type TemplateType = typeof TYPES[number]['key']
 
-const emptyForm = { name: '', type: 'fission', content: '', chat_api_id: '', fission_count: '' }
+const emptyForm = { name: '', type: 'fission', content: '', chat_api_id: '', fission_count: '', owner_id: '', visibility: 'public', status: 'active' }
+
+export function createAdminTemplatePayload(form: typeof emptyForm) {
+  return {
+    name: form.name.trim(), type: form.type, content: form.content.trim(),
+    chat_api_id: Number(form.chat_api_id), fission_count: form.fission_count ? Number(form.fission_count) : null,
+    owner_id: form.owner_id ? Number(form.owner_id) : null, visibility: form.visibility, status: form.status,
+  }
+}
 
 const columnLabels = {
   name: '模板名称',
@@ -96,7 +108,7 @@ export default function AdminWorkspaceTemplates() {
 
   const openEdit = (t: Template) => {
     setEditTarget(t)
-    setForm({ name: t.name, type: t.type, content: t.content, chat_api_id: String(t.chat_api_id || ''), fission_count: t.fission_count ? String(t.fission_count) : '' })
+    setForm({ name: t.name, type: t.type, content: t.content, chat_api_id: String(t.chat_api_id || ''), fission_count: t.fission_count ? String(t.fission_count) : '', owner_id: t.owner_id ? String(t.owner_id) : '', visibility: t.visibility || 'public', status: t.status || 'active' })
     setShowDialog(true)
   }
 
@@ -106,11 +118,7 @@ export default function AdminWorkspaceTemplates() {
     try {
       const url = editTarget ? `/api/admin/workspace/templates/${editTarget.id}` : '/api/admin/workspace/templates'
       const method = editTarget ? 'PATCH' : 'POST'
-      const body = {
-        name: form.name, type: form.type, content: form.content,
-        chat_api_id: parseInt(form.chat_api_id),
-        fission_count: form.fission_count ? parseInt(form.fission_count) : null,
-      }
+      const body = createAdminTemplatePayload(form)
       const res = await apiFetch(url, { method, body })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '保存失败')
@@ -316,6 +324,11 @@ export default function AdminWorkspaceTemplates() {
                 <Input type="number" placeholder="如：10" value={form.fission_count} onChange={e => setForm(p => ({ ...p, fission_count: e.target.value }))} />
               </div>
             )}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1"><Label>归属用户 ID</Label><Input type="number" placeholder="留空为系统模板" value={form.owner_id} onChange={e => setForm(p => ({ ...p, owner_id: e.target.value }))} /></div>
+              <div className="space-y-1"><Label>可见性</Label><Select value={form.visibility} onValueChange={v => v && setForm(p => ({ ...p, visibility: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="public">公开</SelectItem><SelectItem value="private">私有</SelectItem></SelectContent></Select></div>
+              <div className="space-y-1"><Label>状态</Label><Select value={form.status} onValueChange={v => v && setForm(p => ({ ...p, status: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="archived">已归档</SelectItem></SelectContent></Select></div>
+            </div>
             <div className="space-y-1">
               <Label>
                 模板内容

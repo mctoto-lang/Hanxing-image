@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { db } from './index.js';
+import { migrateWorkspaceTemplateAccess } from '../lib/workspace-template-access.js';
 
 export function migrate() {
   console.log('开始数据库迁移...');
@@ -437,6 +438,8 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_card_images_card_id ON card_images(card_id);
     CREATE INDEX IF NOT EXISTS idx_workspace_api_logs_user_id ON workspace_api_logs(user_id);
   `);
+
+  migrateWorkspaceTemplateAccess(db);
 
   console.log('批量生图工作台相关表已创建');
 
