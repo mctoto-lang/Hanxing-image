@@ -35,6 +35,18 @@ interface WorkspaceImage {
   task_id: number
   task_title: string
   task_created_at: string
+  model_name: string | null
+  started_at: string | null
+  completed_at: string | null
+}
+
+interface PreviewItem {
+  prompt?: string
+  model_name?: string
+  image_size?: string
+  created_at?: string
+  started_at?: string | null
+  completed_at?: string | null
 }
 
 type SourceFilter = 'all' | 'creative' | 'project' | 'product' | 'batch'
@@ -47,7 +59,7 @@ interface AssetImageItem {
   prompt: string
   created_at: string
   kind: AssetKind
-  previewItem: Task | { prompt?: string; model_name?: string; image_size?: string; created_at?: string }
+  previewItem: Task | PreviewItem
 }
 
 const sourceOptions: { value: SourceFilter; label: string }[] = [
@@ -73,6 +85,17 @@ function getAssetKind(source: string): AssetKind {
 
 export function createAssetImageId(source: 'task' | 'workspace', recordId: number, imageIndex = 0): string {
   return `${source}-${recordId}-${imageIndex}`
+}
+
+export function mapWorkspaceImagePreview(image: Pick<WorkspaceImage, 'prompt' | 'size' | 'model_name' | 'started_at' | 'completed_at' | 'created_at'>): PreviewItem {
+  return {
+    prompt: image.prompt,
+    image_size: image.size ?? undefined,
+    model_name: image.model_name ?? undefined,
+    started_at: image.started_at,
+    completed_at: image.completed_at,
+    created_at: image.created_at,
+  }
 }
 
 function getDateKey(dateStr: string): string {
@@ -223,7 +246,7 @@ export default function HistoryPage() {
   const [error, setError] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
-  const [previewItem, setPreviewItem] = useState<Task | { prompt?: string; model_name?: string; image_size?: string; created_at?: string } | null>(null)
+  const [previewItem, setPreviewItem] = useState<Task | PreviewItem | null>(null)
   // failedImages 改为 useRef，避免每次图片失败触发全组件重渲染
   const failedImagesRef = useRef<Set<string>>(new Set())
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
@@ -339,7 +362,7 @@ export default function HistoryPage() {
           prompt: img.prompt || '',
           created_at: img.created_at,
           kind: 'batch',
-          previewItem: { prompt: img.prompt, created_at: img.created_at },
+          previewItem: mapWorkspaceImagePreview(img),
         })
       }
     }
@@ -374,7 +397,7 @@ export default function HistoryPage() {
     return Array.from(map.entries()).sort(([a], [b]) => b.localeCompare(a))
   }, [visibleImages])
 
-  const openPreview = useCallback((imageUrl: string, item: Task | { prompt?: string; model_name?: string; image_size?: string; created_at?: string }) => {
+  const openPreview = useCallback((imageUrl: string, item: Task | PreviewItem) => {
     setPreviewImageUrl(imageUrl)
     setPreviewItem(item)
     setPreviewOpen(true)
