@@ -49,6 +49,15 @@ interface BuildImageRequestSummaryInput {
   imageSize: string
 }
 
+export interface BuildImageLogRequestParamsInput extends BuildImageRequestSummaryInput {
+  source: string
+  sourceLabel: string
+  taskType: string
+  model: string
+  prompt: string
+  format: ImageApiFormat
+}
+
 const FORMATS = new Set<ImageApiFormat>(['grs', 'jimeng'])
 const GRS_FIELDS = new Set(['grs_model_family', 'reply_type', 'image_size_grs'])
 const JIMENG_FIELDS = new Set(['jimeng_resolution', 'jimeng_n'])
@@ -173,7 +182,7 @@ export function buildGrsRequestBody(input: BuildGrsRequestInput): Record<string,
   const body: Record<string, unknown> = {
     model: input.model,
     prompt: input.prompt,
-    aspectRatio: sizeToRatio(input.imageSize),
+    aspectRatio: input.extraConfig.grs_model_family === 'gpt' ? input.imageSize : sizeToRatio(input.imageSize),
     replyType: input.extraConfig.reply_type || 'json',
   }
   if (input.extraConfig.grs_model_family === 'gemini' && input.extraConfig.image_size_grs) {
@@ -208,6 +217,19 @@ export function buildImageRequestSummary(input: BuildImageRequestSummaryInput) {
     reference_image_field: input.referenceImageField?.trim() || DEFAULT_REFERENCE_IMAGE_FIELD,
     model_family: input.modelFamily || null,
     image_size: input.imageSize,
+  }
+}
+
+export function buildImageLogRequestParams(input: BuildImageLogRequestParamsInput) {
+  return {
+    source: input.source,
+    source_label: input.sourceLabel,
+    task_type: input.taskType,
+    model: input.model,
+    prompt: input.prompt,
+    size: input.imageSize,
+    format: input.format,
+    ...buildImageRequestSummary(input),
   }
 }
 
