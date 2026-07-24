@@ -1,6 +1,7 @@
 import { query } from '../db/index.js';
 import { uploadImage, generateFilename } from './cos.js';
 import { decrypt } from './crypto.js';
+import { buildGrsRequestBody, buildImageRequestSummary, buildImageResponseSummary, buildJimengRequestBody, type GrsModelFamily, validateQueuedGeneration } from '../lib/image-model-config.js';
 
 interface Task {
   id: number;
@@ -28,6 +29,7 @@ interface ExtraConfig {
   reply_type?: string;     // GRS: json/async
   aspect_ratio?: string;   // GRS: "1:1" 或 "1024x1024"
   image_size_grs?: string; // GRS: 1K/2K/4K
+  grs_model_family?: GrsModelFamily;
   // 云雾 MJ 格式
   bot_type?: string;       // 云雾MJ: MID_JOURNEY/NIJI_JOURNEY
   // Jimeng 格式
@@ -342,6 +344,16 @@ class TaskQueue {
     const callIndex = (callCountResult.rows[0]?.count || 0) + 1;
     const taskSource = task.source || 'creative';
     const taskSourceLabel = getTaskSourceLabel(task);
+    const referenceImages = this.getReferenceImages(task);
+    const modelExtraConfig: ExtraConfig = (() => {
+      try { return JSON.parse(model?.extra_config || '{}') } catch { return {} }
+    })();
+    const requestSummary = buildImageRequestSummary({
+      referenceImages,
+      referenceImageField: model?.reference_image_field,
+      modelFamily: model?.api_format === 'grs' ? modelExtraConfig.grs_model_family || null : model?.api_format || null,
+      imageSize: task.image_size,
+    });
 
     // 检查任务总超时
     if (taskTimeoutMs > 0 && task.started_at) {
@@ -357,7 +369,7 @@ class TaskQueue {
     // 记录本次调用
     const callLogResult = query(
       'INSERT INTO api_call_logs (task_id, call_index, status, request_params, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-      [task.id, callIndex, 'pending', JSON.stringify({ source: taskSource, source_label: taskSourceLabel, task_type: task.task_type || null, model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai' })]
+      [task.id, callIndex, 'pending', JSON.stringify({ source: taskSource, source_label: taskSourceLabel, task_type: task.task_type || null, model: model?.name, prompt: task.prompt?.slice(0, 200), size: task.image_size, format: model?.api_format || 'openai', ...requestSummary })]
     );
     const callLogId = callLogResult.lastInsertRowid;
     const workspaceLogId = this.createWorkspaceImageLog(task, model, 'pending', {
@@ -370,6 +382,7 @@ class TaskQueue {
         prompt: task.prompt?.slice(0, 200) || '',
         size: task.image_size,
         format: model?.api_format || 'openai',
+        ...requestSummary,
       },
       retryCount: task.retry_count || 0,
     })
@@ -391,6 +404,8 @@ class TaskQueue {
         throw new Error('模型API未配置');
       }
 
+      validateQueuedGeneration(model, this.getReferenceImages(task), task.image_size);
+
       await this.normalizeTaskReferenceImages(task);
       const imageUrls = await this.callImageAPI(model, task, taskTimeoutMs);
       const elapsed = Date.now() - startTime;
@@ -400,7 +415,7 @@ class TaskQueue {
         [JSON.stringify({ imageCount: imageUrls.length }), elapsed, callLogId]
       );
       this.updateWorkspaceImageLog(workspaceLogId as number | null, 'success', {
-        responseBody: JSON.stringify({ imageCount: imageUrls.length, imageUrls: imageUrls.slice(0, 10) }),
+        responseBody: JSON.stringify(buildImageResponseSummary(imageUrls)),
         durationMs: elapsed,
         retryCount: task.retry_count || 0,
       })
@@ -551,7 +566,7 @@ class TaskQueue {
   }
 
   private async callImageAPI(model: any, task: Task, taskTimeoutMs: number): Promise<string[]> {
-    const apiFormat = model.api_format || 'openai';
+    const apiFormat = model.api_format as 'grs' | 'jimeng';
     const extraConfig: ExtraConfig = (() => {
       try {
         return JSON.parse(model.extra_config || '{}');
@@ -564,18 +579,10 @@ class TaskQueue {
     console.log(`[API] 使用 ${apiFormat} 格式调用 | model=${model.name}`);
 
     switch (apiFormat) {
-      case 'gemini':
-        return this.callGeminiAPI(model, task, apiKey, taskTimeoutMs);
-      case 'midjourney':
-        return this.callMidjourneyAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
       case 'grs':
         return this.callGRSAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
-      case 'yunwu_mj':
-        return this.callYunwuMJAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
       case 'jimeng':
         return this.callJimengAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
-      default:
-        return this.callOpenAIAPI(model, task, extraConfig, apiKey, taskTimeoutMs);
     }
   }
 
@@ -619,7 +626,23 @@ class TaskQueue {
 
   private async normalizeReferenceImageToUrl(value: string, taskId: number, index: number): Promise<string> {
     if (!value) return value;
-    if (this.isRemoteUrl(value) || value.startsWith('/uploads/')) {
+
+    // 本地路径需要读取文件并上传到存储服务（COS），获取外部 API 可访问的公网 URL
+    if (value.startsWith('/uploads/')) {
+      const fs = await import('fs');
+      const path = await import('path');
+      const relativePath = value.replace(/^\/uploads\//, '');
+      const filePath = path.default.resolve('uploads', relativePath);
+      if (fs.default.existsSync(filePath)) {
+        const ext = path.default.extname(filePath).replace('.', '') || 'png';
+        const filename = generateFilename(taskId, index, ext);
+        const buffer = await fs.default.promises.readFile(filePath);
+        return await uploadImage(buffer, filename);
+      }
+      return value;
+    }
+
+    if (this.isRemoteUrl(value)) {
       return value;
     }
 
@@ -933,7 +956,14 @@ class TaskQueue {
     }
 
     const replyType = extraConfig.reply_type || 'json';
-    const aspectRatio = extraConfig.aspect_ratio || sizeToRatio(task.image_size);
+    const grsConfig = {
+      grs_model_family: extraConfig.grs_model_family || 'gemini',
+      reply_type: extraConfig.reply_type === 'async' ? 'async' as const : 'json' as const,
+      image_size_grs: ['1K', '2K', '4K'].includes(extraConfig.image_size_grs || '')
+        ? extraConfig.image_size_grs as '1K' | '2K' | '4K'
+        : undefined,
+    };
+    const aspectRatio = grsConfig.grs_model_family === 'gpt' ? task.image_size : sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
       this.ensureTaskNotTimedOut(task, taskTimeoutMs);
@@ -943,21 +973,16 @@ class TaskQueue {
       const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
       const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
-      const requestBody: Record<string, unknown> = {
+      const requestBody = buildGrsRequestBody({
         model: model.name,
         prompt: task.prompt,
-        aspectRatio: aspectRatio,
-        replyType: replyType,
-      };
+        imageSize: task.image_size,
+        extraConfig: grsConfig,
+        referenceImages: taskReferenceImages,
+        referenceImageField: model.reference_image_field,
+      });
 
-      // 添加 imageSize（nano-banana 支持 1K/2K/4K）
-      if (extraConfig.image_size_grs) {
-        requestBody.imageSize = extraConfig.image_size_grs;
-      }
-
-      // 添加参考图
       if (taskReferenceImages.length > 0) {
-        requestBody.images = taskReferenceImages;
         console.log(`[GRS] 参考图: ${taskReferenceImages.length} 张`);
       }
 
@@ -1498,17 +1523,18 @@ class TaskQueue {
     const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
     const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
-    const requestBody: Record<string, unknown> = {
+    const requestBody = buildJimengRequestBody({
       model: model.name,
       prompt: task.prompt,
-      ratio: ratio,
-      resolution: resolution,
-      n: n,
-    };
+      ratio,
+      resolution,
+      count: n,
+      referenceImages: taskReferenceImages,
+      referenceImageField: model.reference_image_field,
+    });
 
     // 添加参考图（仅图生图）
     if (hasReferenceImages) {
-      requestBody.images = taskReferenceImages;
       console.log(`[Jimeng] 参考图: ${taskReferenceImages.length} 张`);
     }
 

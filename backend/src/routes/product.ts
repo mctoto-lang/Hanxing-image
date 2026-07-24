@@ -4,6 +4,7 @@ import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { uploadImage } from '../services/cos.js';
 import { taskQueue } from '../services/queue.js';
+import { validateGenerationCapabilities } from '../lib/image-model-config.js';
 
 const router = Router();
 
@@ -527,11 +528,11 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
 
     const model = modelResult.rows[0];
 
-    // 检查参考图数量限制
-    if (reference_images.length > model.max_reference_images) {
-      return res.status(400).json({
-        error: `参考图数量超过限制（最多${model.max_reference_images}张）`
-      });
+    let validatedReferenceImages: string[];
+    try {
+      validatedReferenceImages = validateGenerationCapabilities(model, reference_images, size);
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
     }
 
     // 查询用户信息
@@ -570,7 +571,7 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
             model_id,
             prompt,
             size,
-            JSON.stringify(reference_images),
+            JSON.stringify(validatedReferenceImages),
             model.cost_per_image,
             JSON.stringify({ mode: 'single' })
           ]);
@@ -667,7 +668,7 @@ router.post('/generate', authMiddleware, async (req: AuthRequest, res: Response,
             model_id,
             mergedPrompt,
             size,
-            JSON.stringify(reference_images),
+            JSON.stringify(validatedReferenceImages),
             model.cost_per_image,
             JSON.stringify({
               mode: 'template',

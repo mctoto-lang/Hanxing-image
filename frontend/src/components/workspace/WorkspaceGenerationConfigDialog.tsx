@@ -15,6 +15,7 @@ interface Props {
   selectedRefineTemplate: Template | null
   selectedRegenTemplate: Template | null
   selectedExtractTemplate: Template | null
+  selectedTranslateTemplate: Template | null
   selectedImageModel: ImageModel | null
   selectedSize: string | null
   onApply: (config: {
@@ -22,6 +23,7 @@ interface Props {
     refineTemplate: Template | null
     regenTemplate: Template | null
     extractTemplate: Template | null
+    translateTemplate: Template | null
     imageModel: ImageModel | null
     size: string | null
   }) => void
@@ -49,6 +51,7 @@ export default function WorkspaceGenerationConfigDialog({
   selectedRefineTemplate,
   selectedRegenTemplate,
   selectedExtractTemplate,
+  selectedTranslateTemplate,
   selectedImageModel,
   selectedSize,
   onApply,
@@ -58,11 +61,13 @@ export default function WorkspaceGenerationConfigDialog({
   const [refineTemplates, setRefineTemplates] = useState<Template[]>([])
   const [regenTemplates, setRegenTemplates] = useState<Template[]>([])
   const [extractTemplates, setExtractTemplates] = useState<Template[]>([])
+  const [translateTemplates, setTranslateTemplates] = useState<Template[]>([])
   const [models, setModels] = useState<ImageModel[]>([])
   const [fissionTemplateId, setFissionTemplateId] = useState('')
   const [refineTemplateId, setRefineTemplateId] = useState('')
   const [regenTemplateId, setRegenTemplateId] = useState('')
   const [extractTemplateId, setExtractTemplateId] = useState('')
+  const [translateTemplateId, setTranslateTemplateId] = useState('')
   const [imageModelId, setImageModelId] = useState('')
   const [size, setSize] = useState('')
   const [loading, setLoading] = useState(false)
@@ -89,6 +94,11 @@ export default function WorkspaceGenerationConfigDialog({
     label: t.name,
     description: t.api_name || undefined,
   })), [extractTemplates])
+  const translateTemplateOptions = useMemo(() => translateTemplates.map(t => ({
+    value: String(t.id),
+    label: t.name,
+    description: t.api_name || undefined,
+  })), [translateTemplates])
   const modelOptions = useMemo(() => models.map(m => ({
     value: String(m.id),
     label: m.display_name || m.name,
@@ -107,6 +117,7 @@ export default function WorkspaceGenerationConfigDialog({
     setRefineTemplateId(selectedRefineTemplate ? String(selectedRefineTemplate.id) : '')
     setRegenTemplateId(selectedRegenTemplate ? String(selectedRegenTemplate.id) : '')
     setExtractTemplateId(selectedExtractTemplate ? String(selectedExtractTemplate.id) : '')
+    setTranslateTemplateId(selectedTranslateTemplate ? String(selectedTranslateTemplate.id) : '')
     setImageModelId(selectedImageModel ? String(selectedImageModel.id) : '')
     setSize(selectedSize || '')
     fetchOptions()
@@ -121,18 +132,20 @@ export default function WorkspaceGenerationConfigDialog({
   const fetchOptions = async () => {
     setLoading(true)
     try {
-      const [fissionRes, refineRes, regenRes, extractRes, modelsRes] = await Promise.all([
-        apiFetch('/api/admin/workspace/templates?type=fission'),
-        apiFetch('/api/admin/workspace/templates?type=deepen'),
-        apiFetch('/api/admin/workspace/templates?type=regenerate'),
-        apiFetch('/api/admin/workspace/templates?type=extract'),
+      const [fissionRes, refineRes, regenRes, extractRes, translateRes, modelsRes] = await Promise.all([
+        apiFetch('/api/workspace/templates?type=fission'),
+        apiFetch('/api/workspace/templates?type=deepen'),
+        apiFetch('/api/workspace/templates?type=regenerate'),
+        apiFetch('/api/workspace/templates?type=extract'),
+        apiFetch('/api/workspace/templates?type=translate'),
         apiFetch('/api/models?source=workspace'),
       ])
-      const [fissionData, refineData, regenData, extractData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), extractRes.json(), modelsRes.json()])
+      const [fissionData, refineData, regenData, extractData, translateData, modelsData] = await Promise.all([fissionRes.json(), refineRes.json(), regenRes.json(), extractRes.json(), translateRes.json(), modelsRes.json()])
       setFissionTemplates(fissionData.templates || [])
       setRefineTemplates(refineData.templates || [])
       setRegenTemplates(regenData.templates || [])
       setExtractTemplates(extractData.templates || [])
+      setTranslateTemplates(translateData.templates || [])
       setModels(modelsData.models || [])
     } catch {
       toast.error('获取生成配置失败')
@@ -147,6 +160,7 @@ export default function WorkspaceGenerationConfigDialog({
       refineTemplate: refineTemplates.find(t => String(t.id) === refineTemplateId) || null,
       regenTemplate: regenTemplates.find(t => String(t.id) === regenTemplateId) || null,
       extractTemplate: extractTemplates.find(t => String(t.id) === extractTemplateId) || null,
+      translateTemplate: translateTemplates.find(t => String(t.id) === translateTemplateId) || null,
       imageModel: selectedModel,
       size: size || null,
     })
@@ -209,6 +223,19 @@ export default function WorkspaceGenerationConfigDialog({
                 placeholder="选择提取提示词模板"
                 searchPlaceholder="搜索提取提示词模板..."
                 emptyText="暂无提取提示词模板"
+                className="h-10"
+                contentClassName="min-w-[360px]"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>提示词翻译模板</Label>
+              <Combobox
+                value={translateTemplateId}
+                onValueChange={setTranslateTemplateId}
+                options={translateTemplateOptions}
+                placeholder="选择翻译模板"
+                searchPlaceholder="搜索翻译模板..."
+                emptyText="暂无提示词翻译模板"
                 className="h-10"
                 contentClassName="min-w-[360px]"
               />

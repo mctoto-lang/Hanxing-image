@@ -71,6 +71,7 @@ interface CardGridProps {
   flipAllToImage: boolean
   selectedDeepenTemplate: Template | null
   selectedRegenTemplate: Template | null
+  selectedTranslateTemplate: Template | null
   selectedImageModel: ImageModel | null
   selectedSize: string | null
   onToggleSelect: (id: number) => void
@@ -80,6 +81,7 @@ interface CardGridProps {
   // 外部批量操作加载状态
   batchDeepeningCardIds?: Set<number>
   batchRegeneratingCardIds?: Set<number>
+  batchTranslatingCardIds?: Set<number>
   batchGeneratingImageCardIds?: Set<number>
 }
 
@@ -116,6 +118,7 @@ export default memo(function WorkspaceCardGrid({
   flipAllToImage,
   selectedDeepenTemplate,
   selectedRegenTemplate,
+  selectedTranslateTemplate,
   selectedImageModel,
   selectedSize,
   onToggleSelect,
@@ -124,6 +127,7 @@ export default memo(function WorkspaceCardGrid({
   onCardGeneratingImage,
   batchDeepeningCardIds = EMPTY_SET,
   batchRegeneratingCardIds = EMPTY_SET,
+  batchTranslatingCardIds = EMPTY_SET,
   batchGeneratingImageCardIds = EMPTY_SET,
 }: CardGridProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -221,6 +225,7 @@ export default memo(function WorkspaceCardGrid({
             flipAllToImage={flipAllToImage}
             selectedDeepenTemplate={selectedDeepenTemplate}
             selectedRegenTemplate={selectedRegenTemplate}
+            selectedTranslateTemplate={selectedTranslateTemplate}
             selectedImageModel={selectedImageModel}
             selectedSize={selectedSize}
             onToggleSelect={onToggleSelect}
@@ -228,6 +233,7 @@ export default memo(function WorkspaceCardGrid({
             onCardGeneratingImage={onCardGeneratingImage}
             batchDeepening={batchDeepeningCardIds.has(card.id)}
             batchRegenerating={batchRegeneratingCardIds.has(card.id)}
+            batchTranslating={batchTranslatingCardIds.has(card.id)}
             batchGeneratingImage={batchGeneratingImageCardIds.has(card.id)}
           />
         ))}

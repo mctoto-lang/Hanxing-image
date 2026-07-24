@@ -5,7 +5,7 @@ interface ChatTask {
   id: number;
   user_id: number;
   chat_api_id: number;
-  task_type: 'deepen' | 'regenerate';
+  task_type: 'deepen' | 'regenerate' | 'translate';
   card_id: number;
   workspace_task_id: number;
   template_id: number;
@@ -144,10 +144,17 @@ class ChatTaskQueue {
       );
 
       // 更新卡片的提示词
-      query(
-        "UPDATE prompt_cards SET prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [resultPrompt, task.card_id]
-      );
+      if (task.task_type === 'translate') {
+        query(
+          "UPDATE prompt_cards SET translated_prompt = ?, translation_source_prompt = ?, translation_status = 'synced', translation_template_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [resultPrompt, task.original_prompt, task.template_id, task.card_id]
+        );
+      } else {
+        query(
+          "UPDATE prompt_cards SET prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [resultPrompt, task.card_id]
+        );
+      }
 
       // 记录日志
       query(

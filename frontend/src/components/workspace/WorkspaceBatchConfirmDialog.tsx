@@ -2,15 +2,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Button } from '@/components/ui/button'
 import { AlertTriangle } from 'lucide-react'
 
+type GenerationLanguage = 'zh' | 'en'
+
 interface Props {
   open: boolean
   action: string
   count: number
   onConfirm: () => void
   onClose: () => void
+  generationLanguage?: GenerationLanguage
+  languageSummary?: { requiresLanguageSelection: boolean; primaryCount: number; fallbackCount: number }
+  onLanguagePreferenceChange?: (language: GenerationLanguage) => void
 }
 
-export default function WorkspaceBatchConfirmDialog({ open, action, count, onConfirm, onClose }: Props) {
+export default function WorkspaceBatchConfirmDialog({ open, action, count, onConfirm, onClose, generationLanguage, languageSummary, onLanguagePreferenceChange }: Props) {
   const isDeleteAction = action === '批量删除'
 
   return (
@@ -30,9 +35,25 @@ export default function WorkspaceBatchConfirmDialog({ open, action, count, onCon
             <p>请确认是否继续删除。</p>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground py-2">
-            确认对 <span className="text-foreground font-medium">{count}</span> 张卡片执行「{action}」操作？
-          </p>
+          <div className="space-y-4 py-2 text-sm text-muted-foreground">
+            <p>
+              确认对 <span className="text-foreground font-medium">{count}</span> 张卡片执行「{action}」操作？
+            </p>
+            {generationLanguage && languageSummary?.requiresLanguageSelection && (
+              <div className="space-y-3">
+                <p className="font-medium text-foreground">生成语言优先级</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant={generationLanguage === 'zh' ? 'default' : 'outline'} onClick={() => onLanguagePreferenceChange?.('zh')}>中文优先</Button>
+                  <Button variant={generationLanguage === 'en' ? 'default' : 'outline'} onClick={() => onLanguagePreferenceChange?.('en')}>英文优先</Button>
+                </div>
+                <p>
+                  {generationLanguage === 'zh'
+                    ? `将使用中文生成 ${languageSummary.primaryCount} 张；${languageSummary.fallbackCount > 0 ? `无中文时使用英文 ${languageSummary.fallbackCount} 张。` : ''}`
+                    : `将使用英文生成 ${languageSummary.primaryCount} 张；${languageSummary.fallbackCount > 0 ? `${languageSummary.fallbackCount} 张无有效英文译文，将自动使用中文。` : ''}`}
+                </p>
+              </div>
+            )}
+          </div>
         )}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>取消</Button>

@@ -6,6 +6,7 @@ data/
 *.log
 .kiro/
 .trae/
+.dbg/
 *.sqlite
 项目-用户提供文件/
 用户-参考文件夹/

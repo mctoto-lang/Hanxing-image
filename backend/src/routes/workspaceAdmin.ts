@@ -92,8 +92,8 @@ workspaceAdminRouter.post('/templates', async (req, res) => {
     if (!type || !name || !content || !chat_api_id) {
       return res.status(400).json({ error: '模板类型、名称、内容和关联API不能为空' });
     }
-    if (!['fission', 'deepen', 'regenerate', 'extract'].includes(type)) {
-      return res.status(400).json({ error: '模板类型必须为 fission / deepen / regenerate / extract' });
+    if (!['fission', 'deepen', 'regenerate', 'extract', 'translate'].includes(type)) {
+      return res.status(400).json({ error: '模板类型必须为 fission / deepen / regenerate / extract / translate' });
     }
 
     const result = query(
@@ -138,9 +138,26 @@ workspaceAdminRouter.delete('/templates/:id', async (req, res) => {
     const existing = query('SELECT id FROM prompt_templates WHERE id = ?', [req.params.id]);
     if (!existing.rows[0]) return res.status(404).json({ error: '模板不存在' });
 
-    query('DELETE FROM prompt_templates WHERE id = ?', [req.params.id]);
+    const workspaceTaskReferences = query(
+      'SELECT COUNT(*) as count FROM workspace_tasks WHERE template_id = ?',
+      [req.params.id]
+    );
+    const chatTaskReferences = query(
+      'SELECT COUNT(*) as count FROM chat_tasks WHERE template_id = ?',
+      [req.params.id]
+    );
+    const referenceCount = Number(workspaceTaskReferences.rows[0]?.count || 0) + Number(chatTaskReferences.rows[0]?.count || 0);
+    if (referenceCount > 0) {
+      return res.status(409).json({ error: '模板已被任务引用，无法删除' });
+    }
+
+    const deleted = query('DELETE FROM prompt_templates WHERE id = ?', [req.params.id]);
+    if (deleted.changes !== 1) return res.status(404).json({ error: '模板不存在' });
     return res.json({ message: '已删除' });
-  } catch {
+  } catch (error: any) {
+    if (error?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+      return res.status(409).json({ error: '模板已被任务引用，无法删除' });
+    }
     return res.status(500).json({ error: '删除模板失败' });
   }
 });
@@ -152,11 +169,13 @@ workspaceAdminRouter.get('/workspace-logs', async (req, res) => {
     const offset = (page - 1) * pageSize;
     const apiType = req.query.api_type as string;
     const status = req.query.status as string;
+    const generationTaskId = req.query.generation_task_id as string;
 
     let where = 'WHERE 1=1';
     const params: any[] = [];
     if (apiType) { where += ' AND l.api_type = ?'; params.push(apiType); }
     if (status) { where += ' AND l.response_status = ?'; params.push(status); }
+    if (generationTaskId && /^\d+$/.test(generationTaskId)) { where += ' AND l.generation_task_id = ?'; params.push(generationTaskId); }
 
     const logs = query(
       `SELECT l.*, u.username FROM workspace_api_logs l LEFT JOIN users u ON l.user_id = u.id

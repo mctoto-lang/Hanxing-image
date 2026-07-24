@@ -42,6 +42,7 @@ type AssetKind = 'creative' | 'project' | 'product' | 'batch'
 type ViewMode = 'waterfall' | 'grid'
 
 interface AssetImageItem {
+  id: string
   imageUrl: string
   prompt: string
   created_at: string
@@ -68,6 +69,10 @@ function getAssetKind(source: string): AssetKind {
   if (source === 'project') return 'project'
   if (source === 'product') return 'product'
   return 'creative'
+}
+
+export function createAssetImageId(source: 'task' | 'workspace', recordId: number, imageIndex = 0): string {
+  return `${source}-${recordId}-${imageIndex}`
 }
 
 function getDateKey(dateStr: string): string {
@@ -314,9 +319,10 @@ export default function HistoryPage() {
   const displayImages = useMemo<AssetImageItem[]>(() => {
     const items: AssetImageItem[] = []
     if (sourceFilter !== 'batch') {
-      for (const item of allImages) {
+      for (const [imageIndex, item] of allImages.entries()) {
         const kind = getAssetKind(item.task.source)
         items.push({
+          id: createAssetImageId('task', item.task.id, imageIndex),
           imageUrl: item.imageUrl,
           prompt: item.task.prompt || '',
           created_at: item.task.created_at,
@@ -328,6 +334,7 @@ export default function HistoryPage() {
     if (sourceFilter === 'all' || sourceFilter === 'batch') {
       for (const img of workspaceImages) {
         items.push({
+          id: createAssetImageId('workspace', img.id),
           imageUrl: img.image_url,
           prompt: img.prompt || '',
           created_at: img.created_at,
@@ -464,7 +471,7 @@ export default function HistoryPage() {
           <div className="columns-1 gap-3 sm:columns-2 md:columns-3 lg:columns-4">
             {visibleImages.map((item) => (
               <WaterfallCard
-                key={item.imageUrl}
+                key={item.id}
                 item={item}
                 isFailed={failedImagesRef.current.has(item.imageUrl)}
                 badge={kindConfig[item.kind]}
@@ -482,7 +489,7 @@ export default function HistoryPage() {
               <div className="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5">
                 {images.map((item) => (
                   <GridCard
-                    key={item.imageUrl}
+                    key={item.id}
                     item={item}
                     isFailed={failedImagesRef.current.has(item.imageUrl)}
                     badge={kindConfig[item.kind]}

@@ -2333,38 +2333,61 @@ export default function ProductImagePage() {
 
                         if (record.type === 'completed') {
                           const img = record.data as HistoryImage
+                          const detailLines = getRecordDetailLines(record)
                           return (
-                            <RecordThumbnail
-                              key={`completed-${img.taskId}-${recordPage * recordsPerPage + slot.index}`}
-                              url={img.url}
-                              selected={selectedHistoryImages.has(img.url)}
-                              onClick={() => handleHistoryClick(img.url)}
-                            />
+                            <Tooltip key={`completed-${img.taskId}-${recordPage * recordsPerPage + slot.index}`}>
+                              <TooltipTrigger render={<div className="aspect-square h-full" />}>
+                                <RecordThumbnail
+                                  url={img.url}
+                                  selected={selectedHistoryImages.has(img.url)}
+                                  onClick={() => handleHistoryClick(img.url)}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-64 whitespace-pre-line">
+                                {detailLines.join('\n')}
+                              </TooltipContent>
+                            </Tooltip>
                           )
                         }
 
                         if (record.type === 'pending') {
                           const task = record.data as GenerationTask
+                          const detailLines = getRecordDetailLines(record)
                           return (
-                            <div
-                              key={`pending-${task.id}-${slotIndex}`}
-                              className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
-                              title="生成中..."
-                            >
-                              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                            </div>
+                            <Tooltip key={`pending-${task.id}-${slotIndex}`}>
+                              <TooltipTrigger render={<div className="aspect-square h-full" />}>
+                                <div
+                                  className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/50"
+                                  role="status"
+                                  aria-label={detailLines.join('，')}
+                                >
+                                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-64 whitespace-pre-line">
+                                {detailLines.join('\n')}
+                              </TooltipContent>
+                            </Tooltip>
                           )
                         }
 
                         const task = record.data as GenerationTask
+                        const detailLines = getRecordDetailLines(record)
                         return (
-                          <div
-                            key={`failed-${task.id}-${slotIndex}`}
-                            className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
-                            title={task.error_message || '生成失败'}
-                          >
-                            <HugeiconsIcon icon={AlertCircleIcon} size={20} strokeWidth={1.7} className="text-destructive/70" />
-                          </div>
+                          <Tooltip key={`failed-${task.id}-${slotIndex}`}>
+                            <TooltipTrigger render={<div className="aspect-square h-full" />}>
+                              <div
+                                className="flex aspect-square h-full items-center justify-center rounded-md border-2 border-dashed border-destructive/40 bg-destructive/5"
+                                role="status"
+                                aria-label={detailLines.join('，')}
+                              >
+                                <HugeiconsIcon icon={AlertCircleIcon} size={20} strokeWidth={1.7} className="text-destructive/70" />
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-64 whitespace-pre-line">
+                              {detailLines.join('\n')}
+                            </TooltipContent>
+                          </Tooltip>
                         )
                       })}
                     </div>
@@ -2405,6 +2428,33 @@ function getSubTemplatePreviewImage(subTemplate: ProductSubTemplate) {
 function getTemplatePreviewImage(template: ProductMainTemplate) {
   const firstSubTemplate = template.sub_templates?.[0]
   return firstSubTemplate ? getSubTemplatePreviewImage(firstSubTemplate) : null
+}
+
+export function getRecordDetailLines(record: RecordEntry): string[] {
+  const isCompleted = record.type === 'completed'
+  const lines = [isCompleted ? '已生成' : record.type === 'pending' ? '生成中' : '生成失败']
+
+  const { modelName, imageSize, prompt, errorMessage } = isCompleted
+    ? {
+        modelName: (record.data as HistoryImage).modelName,
+        imageSize: (record.data as HistoryImage).imageSize,
+        prompt: (record.data as HistoryImage).prompt,
+        errorMessage: undefined,
+      }
+    : {
+        modelName: (record.data as GenerationTask).model_name,
+        imageSize: (record.data as GenerationTask).image_size,
+        prompt: (record.data as GenerationTask).prompt,
+        errorMessage: (record.data as GenerationTask).error_message,
+      }
+
+  if (errorMessage) lines.push(`失败原因：${errorMessage}`)
+
+  if (modelName) lines.push(`模型：${modelName}`)
+  if (imageSize) lines.push(`尺寸：${imageSize}`)
+  if (prompt) lines.push(`提示词：${prompt}`)
+
+  return lines
 }
 
 function RecordThumbnail({

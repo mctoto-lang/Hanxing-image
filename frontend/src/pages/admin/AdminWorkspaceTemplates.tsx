@@ -39,6 +39,7 @@ const TYPES = [
   { key: 'deepen', label: '提示词细化模板' },
   { key: 'regenerate', label: '提示词重新生成模板' },
   { key: 'extract', label: '提取提示词模板' },
+  { key: 'translate', label: '提示词翻译模板' },
 ] as const
 
 type TemplateType = typeof TYPES[number]['key']
@@ -63,6 +64,7 @@ export default function AdminWorkspaceTemplates() {
   const [editTarget, setEditTarget] = useState<Template | null>(null)
   const [form, setForm] = useState({ ...emptyForm, type: 'fission' })
   const [saving, setSaving] = useState(false)
+  const [templatePageIndex, setTemplatePageIndex] = useState(0)
 
   const fetchChatApis = useCallback(async () => {
     try {
@@ -74,9 +76,13 @@ export default function AdminWorkspaceTemplates() {
   const fetchTemplates = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await apiFetch(`/api/admin/workspace/templates?type=${activeType}`).then(r => r.json())
-      setTemplates(data.templates || [])
-    } catch { toast.error('获取模板失败') } finally { setLoading(false) }
+      const res = await apiFetch(`/api/admin/workspace/templates?type=${activeType}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '获取模板失败')
+      const nextTemplates = data.templates || []
+      setTemplates(nextTemplates)
+      return nextTemplates as Template[]
+    } catch (error) { toast.error((error as Error).message || '获取模板失败') } finally { setLoading(false) }
   }, [activeType])
 
   useEffect(() => { fetchChatApis() }, [fetchChatApis])
@@ -117,10 +123,20 @@ export default function AdminWorkspaceTemplates() {
   const handleDelete = async (id: number) => {
     if (!confirm('确认删除此模板？')) return
     try {
-      await apiFetch(`/api/admin/workspace/templates/${id}`, { method: 'DELETE' })
+      const res = await apiFetch(`/api/admin/workspace/templates/${id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '删除失败')
       toast.success('已删除')
-      fetchTemplates()
-    } catch { toast.error('删除失败') }
+      const nextTemplates = await fetchTemplates()
+      if (nextTemplates) {
+        setTemplatePageIndex(current => Math.min(current, Math.max(Math.ceil(nextTemplates.length / 10) - 1, 0)))
+      }
+    } catch (error) { toast.error((error as Error).message || '删除失败') }
+  }
+
+  const handleTypeChange = (type: TemplateType) => {
+    setTemplatePageIndex(0)
+    setActiveType(type)
   }
 
   const typeLabels = useMemo(
@@ -220,7 +236,7 @@ export default function AdminWorkspaceTemplates() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         {TYPES.map(t => (
-          <DropdownMenuItem key={t.key} onClick={() => setActiveType(t.key)}>
+          <DropdownMenuItem key={t.key} onClick={() => handleTypeChange(t.key)}>
             {t.label}
           </DropdownMenuItem>
         ))}
@@ -238,13 +254,16 @@ export default function AdminWorkspaceTemplates() {
           {loading ? (
             <div className="flex items-center justify-center py-12"><Spinner /></div>
           ) : (
-            <DataTable
+          <DataTable
+              key={activeType}
               columns={columns}
               data={templates}
               searchPlaceholder="搜索模板名称..."
               searchColumn="name"
               columnLabels={columnLabels}
               pageSize={10}
+              pageIndex={templatePageIndex}
+              onPageChange={setTemplatePageIndex}
               toolbar={
                 <div className="flex items-center gap-2">
                   {typeSelector}
@@ -303,7 +322,9 @@ export default function AdminWorkspaceTemplates() {
                 <span className="text-muted-foreground text-xs ml-2">支持占位符: {'{{prompt}}'} {form.type === 'fission' ? '{{count}}' : ''}</span>
               </Label>
               <Textarea
-                placeholder={form.type === 'extract'
+                placeholder={form.type === 'translate'
+                  ? `请将以下中文图片提示词翻译为适合图片生成的英文提示词。仅输出英文提示词，不要解释、标题或 Markdown：\n\n{{prompt}}`
+                  : form.type === 'extract'
                   ? `请从以下长文本中提取画面描述，并以编号列表形式输出：\n\n{{prompt}}\n\n输出格式：\n1. 第一条画面描述\n2. 第二条画面描述`
                   : `请基于以下主题，生成 {{count}} 条图片生成提示词：\n\n主题：{{prompt}}\n\n请以编号列表形式输出...`}
                 value={form.content}

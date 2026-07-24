@@ -4,6 +4,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { taskQueue } from '../services/queue.js';
+import { validateGenerationCapabilities, validateQueuedGeneration } from '../lib/image-model-config.js';
 
 export const taskRouter = Router();
 
@@ -138,6 +139,14 @@ taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRe
       return res.status(400).json({ error: '该模型不可用于自由创作' });
     }
 
+    let validatedReferenceImages: string[];
+    const resolvedImageSize = image_size || '1024x1024';
+    try {
+      validatedReferenceImages = validateGenerationCapabilities(model, reference_images, resolvedImageSize);
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
+    }
+
     const allowedModels = user.allowed_models || [];
     // allowed_models 存储的是模型ID字符串数组
     if (allowedModels.length > 0 && !allowedModels.includes(String(model.id))) {
@@ -162,7 +171,7 @@ taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRe
 
     // 使用事务确保积分扣除和任务创建的原子性
     const taskUuid = crypto.randomUUID();
-    const refImagesJson = JSON.stringify(Array.isArray(reference_images) ? reference_images : []);
+    const refImagesJson = JSON.stringify(validatedReferenceImages);
     let insertResult;
     try {
       insertResult = transaction(() => {
@@ -188,7 +197,7 @@ taskRouter.post('/generate', authMiddleware, generateLimiter, async (req: AuthRe
         return query(
           `INSERT INTO generation_tasks (user_id, model_id, prompt, image_size, image_count, status, priority, credits_charged, credits_type, source, task_type, task_uuid, reference_images)
            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, 'normal', ?, ?)`,
-          [req.userId, model_id, prompt, image_size || '1024x1024', count, user.priority || 0, totalCost, creditsType, creditsType, taskUuid, refImagesJson]
+          [req.userId, model_id, prompt, resolvedImageSize, count, user.priority || 0, totalCost, creditsType, creditsType, taskUuid, refImagesJson]
         );
       });
     } catch (err) {
@@ -283,6 +292,14 @@ taskRouter.post('/:id/retry', authMiddleware, async (req: AuthRequest, res) => {
     }
     if (task.status !== 'failed') {
       return res.status(400).json({ error: '只能重试失败的任务' });
+    }
+
+    const model = query('SELECT * FROM models WHERE id = ? AND is_active = 1', [task.model_id]).rows[0];
+    if (!model) return res.status(400).json({ error: '模型不存在或已停用' });
+    try {
+      validateQueuedGeneration(model, task.reference_images, task.image_size);
+    } catch (error) {
+      return res.status(400).json({ error: (error as Error).message });
     }
 
     const userResult = query(

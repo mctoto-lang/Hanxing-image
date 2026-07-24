@@ -2,6 +2,10 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { LoginForm } from '@/components/login-form'
 import { apiFetch } from '@/lib/api'
+import { GalleryVerticalEndIcon } from 'lucide-react'
+
+const LOGIN_BG =
+  'https://hanxing-image-1317632122.cos.ap-guangzhou.myqcloud.com/image/login-page-bg.png'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -40,17 +44,43 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <LoginForm
-        className="w-80"
-        username={username}
-        setUsername={setUsername}
-        password={password}
-        setPassword={setPassword}
-        error={error}
-        loading={loading}
-        onSubmit={handleLogin}
-      />
+    <div className="grid min-h-svh lg:grid-cols-2">
+      {/* 左侧：品牌 + 表单 */}
+      <div className="flex flex-col gap-4 p-6 md:p-10">
+        {/* 品牌 Logo */}
+        <div className="flex justify-center gap-2 md:justify-start">
+          <a href="#" className="flex items-center gap-2 font-medium">
+            <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <GalleryVerticalEndIcon className="size-4" />
+            </div>
+            瀚星AIGC
+          </a>
+        </div>
+
+        {/* 表单居中 */}
+        <div className="flex flex-1 items-center justify-center">
+          <div className="w-full max-w-xs">
+            <LoginForm
+              username={username}
+              setUsername={setUsername}
+              password={password}
+              setPassword={setPassword}
+              error={error}
+              loading={loading}
+              onSubmit={handleLogin}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* 右侧：封面图片（桌面端显示） */}
+      <div className="relative hidden bg-muted lg:block">
+        <img
+          src={LOGIN_BG}
+          alt="瀚星AIGC"
+          className="absolute inset-0 h-full w-full object-cover dark:brightness-[0.2] dark:grayscale"
+        />
+      </div>
     </div>
   )
 }

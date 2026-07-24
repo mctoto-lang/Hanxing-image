@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { CardImage, PromptCard } from '@/pages/WorkspacePage'
 
-import { mergeCardsWithImageSummary } from '@/pages/WorkspacePage'
+import { getRenamedTaskTitle, getTranslationStatus, mergeCardsWithImageSummary, shouldShowTaskActions } from '@/pages/WorkspacePage'
 import { getNextVisibleCountOnDataChange } from './WorkspaceCardGrid'
-import { shouldAutoFlipToImage } from './WorkspaceFlipCard'
+import { getFlipFaceInteractionProps, getGenerationPrompt, getReferenceImageIndicator, REFERENCE_IMAGE_INDICATOR_CLASSES, shouldAutoFlipToImage } from './WorkspaceFlipCard'
 import { getBottomSkeletonCount, getBottomSkeletonIndexes, shouldShowBottomSkeletons } from './WorkspaceCardGrid'
 
 function createCard(overrides: Partial<PromptCard> = {}): PromptCard {
@@ -47,6 +47,52 @@ function createImage(overrides: Partial<CardImage> = {}): CardImage {
 }
 
 describe('workspace issue 1', () => {
+  it('falls back to the current Chinese prompt when regenerating with a missing English prompt', () => {
+    expect(getGenerationPrompt({
+      displayLanguage: 'en',
+      prompt: '一只猫在花园中',
+      translatedPrompt: null,
+    })).toBe('一只猫在花园中')
+  })
+
+  it('uses the English prompt when regenerating in English mode', () => {
+    expect(getGenerationPrompt({
+      displayLanguage: 'en',
+      prompt: '一只猫在花园中',
+      translatedPrompt: 'A cat in a garden',
+    })).toBe('A cat in a garden')
+  })
+
+  it('marks translated prompt as outdated when the Chinese prompt changed', () => {
+    expect(getTranslationStatus({
+      prompt: '修改后的中文提示词',
+      translated_prompt: 'Updated English prompt',
+      translation_source_prompt: '原始中文提示词',
+      translation_status: 'synced',
+    })).toBe('outdated')
+  })
+
+  it('keeps translation synced when the Chinese prompt matches its translation source', () => {
+    expect(getTranslationStatus({
+      prompt: '一只猫在花园中',
+      translated_prompt: 'A cat in a garden',
+      translation_source_prompt: '一只猫在花园中',
+      translation_status: 'synced',
+    })).toBe('synced')
+  })
+
+  it('returns a trimmed task title for a valid rename', () => {
+    expect(getRenamedTaskTitle('  夏季产品图  ')).toBe('夏季产品图')
+  })
+
+  it('rejects an empty task title for a rename', () => {
+    expect(getRenamedTaskTitle('   ')).toBeNull()
+  })
+
+  it('hides task actions while renaming to prevent overlapping the input', () => {
+    expect(shouldShowTaskActions(true)).toBe(false)
+  })
+
   it('keeps previously loaded selected image fields when refreshed summary has no selected image', () => {
     const currentCards = [createCard()]
     const fetchedCards = [createCard({ sel_img_url: null, sel_img_id: null, selected_image_id: null })]
@@ -115,6 +161,38 @@ describe('workspace issue 1', () => {
       isEditingPrompt: false,
       isManuallyFlippedToBack: false,
     })).toBe(true)
+  })
+
+  it('disables pointer and accessibility interaction on the hidden image face', () => {
+    expect(getFlipFaceInteractionProps(true)).toEqual({
+      imageFace: { pointerEvents: 'none', ariaHidden: true },
+      promptFace: { pointerEvents: 'auto', ariaHidden: false },
+    })
+  })
+
+  it('disables pointer and accessibility interaction on the hidden prompt face', () => {
+    expect(getFlipFaceInteractionProps(false)).toEqual({
+      imageFace: { pointerEvents: 'auto', ariaHidden: false },
+      promptFace: { pointerEvents: 'none', ariaHidden: true },
+    })
+  })
+
+  it('builds a reference image indicator only when references exist', () => {
+    expect(getReferenceImageIndicator('["a.jpg", "a.jpg", "b.jpg"]')).toEqual({
+      count: 2,
+      label: '此卡片带有 2 张参考图片',
+    })
+    expect(getReferenceImageIndicator(null)).toBeNull()
+  })
+
+  it('uses the approved reference image indicator styles on both card faces', () => {
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.image).toContain('rounded-full')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.image).toContain('bg-black/35')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.image).toContain('text-white')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.prompt).toContain('rounded-md')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.prompt).toContain('border-violet-600')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.prompt).toContain('text-violet-600')
+    expect(REFERENCE_IMAGE_INDICATOR_CLASSES.prompt).not.toContain('bg-violet-600/80')
   })
 
   it('keeps current visible count during polling updates within the same task', () => {

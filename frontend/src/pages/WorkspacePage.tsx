@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
-import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp, Replace } from 'lucide-react'
+import { Plus, Search, CheckCircle2, XCircle, Loader2, Trash2, ChevronDown, Wand2, ImagePlus, CheckSquare, Download, Square, PanelLeftClose, PanelLeftOpen, Pin, AlertCircle, RefreshCw, Sparkles, ArrowUp, Replace, Languages } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -29,6 +29,7 @@ import WorkspaceExportDialog from '@/components/workspace/WorkspaceExportDialog'
 import WorkspaceBatchConfirmDialog from '@/components/workspace/WorkspaceBatchConfirmDialog'
 import WorkspaceGenerationConfigDialog from '@/components/workspace/WorkspaceGenerationConfigDialog'
 import WorkspaceBatchReplacePromptDialog from '@/components/workspace/WorkspaceBatchReplacePromptDialog'
+import WorkspaceBatchImageUploadDialog from '@/components/workspace/WorkspaceBatchImageUploadDialog'
 import { QueueStatusBadge } from '@/components/QueueStatusBadge'
 
 export interface WorkspaceTask {
@@ -55,7 +56,13 @@ export interface PromptCard {
   task_id: number
   card_index: number
   prompt: string
+  translated_prompt?: string | null
+  translation_source_prompt?: string | null
+  translation_status?: 'none' | 'translating' | 'synced' | 'outdated' | 'failed'
+  translation_template_id?: number | null
+  display_language?: 'zh' | 'en'
   selected_image_id: number | null
+  reference_images?: string | null
   sel_img_id: number | null
   sel_img_url: string | null
   sel_img_model_name: string | null
@@ -70,6 +77,8 @@ export interface PromptCard {
 export interface CardImage {
   id: number
   card_id: number
+  generation_task_id?: number | null
+  generation_prompt?: string | null
   image_api_id: number | null
   image_url: string
   model_name?: string | null
@@ -78,6 +87,7 @@ export interface CardImage {
   status: 'pending' | 'generating' | 'completed' | 'failed'
   error_message: string | null
   is_selected: number
+  source?: 'generated' | 'uploaded'
   generation_started_at?: string | null
   generation_completed_at?: string | null
   created_at: string
@@ -104,7 +114,7 @@ interface TaskCardImagesPayload {
 
 export interface Template {
   id: number
-  type: 'fission' | 'deepen' | 'regenerate' | 'extract'
+  type: 'fission' | 'deepen' | 'regenerate' | 'extract' | 'translate'
   name: string
   content: string
   chat_api_id: number
@@ -119,6 +129,8 @@ export interface ImageModel {
   display_name: string | null
   supported_sizes: { ratios: { ratio: string; width: number; height: number }[] } | null
   icon_url: string | null
+  supports_reference_image?: number | boolean
+  max_reference_images?: number | null
 }
 
 const SIDEBAR_WIDTH = 280
@@ -154,12 +166,13 @@ interface StoredGenerationConfig {
   refineTemplate: Template | null
   regenTemplate: Template | null
   extractTemplate: Template | null
+  translateTemplate: Template | null
   imageModel: ImageModel | null
   size: string | null
 }
 
 function loadStoredGenerationConfig(): StoredGenerationConfig {
-  const emptyConfig = { fissionTemplate: null, refineTemplate: null, regenTemplate: null, extractTemplate: null, imageModel: null, size: null }
+  const emptyConfig = { fissionTemplate: null, refineTemplate: null, regenTemplate: null, extractTemplate: null, translateTemplate: null, imageModel: null, size: null }
   if (typeof window === 'undefined') return emptyConfig
 
   try {
@@ -168,6 +181,25 @@ function loadStoredGenerationConfig(): StoredGenerationConfig {
     return { ...emptyConfig, ...JSON.parse(raw) }
   } catch {
     return emptyConfig
+  }
+}
+
+export function getTranslationStatus(card: Pick<PromptCard, 'prompt' | 'translated_prompt' | 'translation_source_prompt' | 'translation_status'>) {
+  if (!card.translated_prompt) return card.translation_status === 'translating' ? 'translating' : 'none'
+  return card.translation_source_prompt === card.prompt ? 'synced' : 'outdated'
+}
+
+export type BatchGenerationLanguage = 'zh' | 'en'
+
+export function getBatchGenerationLanguageSummary(cards: PromptCard[], language: BatchGenerationLanguage) {
+  const hasEnglish = (card: PromptCard) => Boolean(card.translated_prompt)
+  const requiresLanguageSelection = cards.some(card => Boolean(card.prompt && hasEnglish(card)))
+  const primaryCount = cards.filter(card => language === 'zh' ? Boolean(card.prompt) : hasEnglish(card)).length
+
+  return {
+    requiresLanguageSelection,
+    primaryCount,
+    fallbackCount: cards.length - primaryCount,
   }
 }
 
@@ -200,6 +232,9 @@ export function mergeCardsWithImageSummary(
         ...card,
         // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
         prompt: previousCard.prompt,
+        translated_prompt: previousCard.translated_prompt,
+        translation_source_prompt: previousCard.translation_source_prompt,
+        translation_status: previousCard.translation_status,
         selected_image_id: card.selected_image_id ?? previousCard.selected_image_id,
         sel_img_id: card.sel_img_id ?? previousCard.sel_img_id,
         sel_img_url: card.sel_img_url ?? previousCard.sel_img_url,
@@ -216,6 +251,9 @@ export function mergeCardsWithImageSummary(
       ...card,
       // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
       prompt: previousCard ? previousCard.prompt : card.prompt,
+      translated_prompt: previousCard ? previousCard.translated_prompt : card.translated_prompt,
+      translation_source_prompt: previousCard ? previousCard.translation_source_prompt : card.translation_source_prompt,
+      translation_status: previousCard ? previousCard.translation_status : card.translation_status,
       selected_image_id: selected.id,
       sel_img_id: selected.id,
       sel_img_url: selected.image_url,
@@ -247,14 +285,28 @@ const statusConfig = {
   failed: { label: '未完成', icon: XCircle, className: 'text-red-600 bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800', spin: false },
 }
 
-const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onPin, onDelete }: {
+export function getRenamedTaskTitle(title: string) {
+  const normalizedTitle = title.trim()
+  return normalizedTitle || null
+}
+
+export function shouldShowTaskActions(isEditingTitle: boolean) {
+  return !isEditingTitle
+}
+
+const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onPin, onDelete, onRename }: {
   task: WorkspaceTask
   isActive: boolean
   isPinned: boolean
   onClick: () => void
   onPin: (id: number) => void
   onDelete: (id: number) => void
+  onRename: (id: number, title: string) => Promise<boolean>
 }) {
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(task.title)
+  const isSavingTitleRef = useRef(false)
+  const showTaskActions = shouldShowTaskActions(isEditingTitle)
   const { label, icon: Icon, className, spin } = statusConfig[task.status]
   const thumbnailUrls = task.thumbnail_urls?.length ? task.thumbnail_urls.slice(0, 3) : task.thumbnail_url ? [task.thumbnail_url] : []
   const hasThumbnail = thumbnailUrls.length > 0
@@ -271,6 +323,35 @@ const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onP
   const hasFailed = failedCount > 0
   const subStatus = hasGenerating ? 'generating' : hasFailed ? 'failed' : null
 
+  const startEditingTitle = () => {
+    setTitleDraft(task.title)
+    setIsEditingTitle(true)
+  }
+
+  const cancelEditingTitle = () => {
+    setTitleDraft(task.title)
+    setIsEditingTitle(false)
+  }
+
+  const saveTitle = async () => {
+    if (!isEditingTitle || isSavingTitleRef.current) return
+    const title = getRenamedTaskTitle(titleDraft)
+    if (!title) {
+      toast.error('任务名称不能为空')
+      cancelEditingTitle()
+      return
+    }
+    if (title === task.title) {
+      cancelEditingTitle()
+      return
+    }
+
+    isSavingTitleRef.current = true
+    const renamed = await onRename(task.id, title)
+    isSavingTitleRef.current = false
+    if (renamed) setIsEditingTitle(false)
+  }
+
   return (
     <div
       onClick={onClick}
@@ -283,24 +364,26 @@ const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onP
             : 'border-transparent hover:bg-accent hover:border-border text-muted-foreground hover:text-foreground',
       )}
     >
-      <div className={cn('absolute right-2 top-2 flex items-center gap-1 transition-all shrink-0', isPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onPin(task.id) }}
-          className={cn('text-muted-foreground hover:text-foreground transition-colors', isPinned && 'text-amber-500 hover:text-amber-600')}
-          aria-label={isPinned ? '取消置顶' : '置顶任务'}
-          title={isPinned ? '取消置顶' : '置顶'}
-        >
-          <Pin className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(task.id) }}
-          className="text-muted-foreground hover:text-destructive transition-colors"
-          aria-label="删除任务"
-          title="删除"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
+      {showTaskActions && (
+        <div className={cn('absolute right-2 top-2 flex items-center gap-1 transition-all shrink-0', isPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}>
+          <button
+            onClick={(e) => { e.stopPropagation(); onPin(task.id) }}
+            className={cn('text-muted-foreground hover:text-foreground transition-colors', isPinned && 'text-amber-500 hover:text-amber-600')}
+            aria-label={isPinned ? '取消置顶' : '置顶任务'}
+            title={isPinned ? '取消置顶' : '置顶'}
+          >
+            <Pin className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(task.id) }}
+            className="text-muted-foreground hover:text-destructive transition-colors"
+            aria-label="删除任务"
+            title="删除"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-3">
         <div className="group/image-stack relative h-16 w-16 shrink-0">
@@ -330,7 +413,40 @@ const TaskCard = memo(function TaskCard({ task, isActive, isPinned, onClick, onP
         </div>
 
         <div className="min-w-0 flex-1 pr-1">
-          <div className="text-sm font-medium truncate leading-5">{task.title}</div>
+          {isEditingTitle ? (
+            <Input
+              autoFocus
+              value={titleDraft}
+              maxLength={200}
+              className="h-6 px-1 text-sm font-medium leading-5"
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onKeyDown={(event) => {
+                event.stopPropagation()
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void saveTitle()
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  cancelEditingTitle()
+                }
+              }}
+              onBlur={() => void saveTitle()}
+            />
+          ) : (
+            <div
+              className="text-sm font-medium truncate leading-5"
+              onDoubleClick={(event) => {
+                event.stopPropagation()
+                startEditingTitle()
+              }}
+            >
+              {task.title}
+            </div>
+          )}
           <div className="mt-1 truncate text-xs leading-4 text-muted-foreground">
             {task.theme_prompt || '暂无主题提示词'}
           </div>
@@ -404,6 +520,7 @@ export default function WorkspacePage() {
   const [selectedDeepenTemplate, setSelectedDeepenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().refineTemplate)
   const [selectedRegenTemplate, setSelectedRegenTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().regenTemplate)
   const [selectedExtractTemplate, setSelectedExtractTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().extractTemplate)
+  const [selectedTranslateTemplate, setSelectedTranslateTemplate] = useState<Template | null>(() => loadStoredGenerationConfig().translateTemplate)
   const [selectedImageModel, setSelectedImageModel] = useState<ImageModel | null>(() => loadStoredGenerationConfig().imageModel)
   const [selectedSize, setSelectedSize] = useState<string | null>(() => loadStoredGenerationConfig().size)
 
@@ -415,13 +532,15 @@ export default function WorkspacePage() {
   const [showSizeDialog, setShowSizeDialog] = useState(false)
   const [showGenerationConfigDialog, setShowGenerationConfigDialog] = useState(false)
   const [showBatchReplacePromptDialog, setShowBatchReplacePromptDialog] = useState(false)
+  const [showBatchImageUploadDialog, setShowBatchImageUploadDialog] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
-  const [batchConfirm, setBatchConfirm] = useState<{ action: string; count: number; onConfirm: () => void } | null>(null)
+  const [batchConfirm, setBatchConfirm] = useState<{ action: string; count: number; onConfirm: () => void; generationLanguage?: BatchGenerationLanguage; languageSummary?: ReturnType<typeof getBatchGenerationLanguageSummary> } | null>(null)
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<WorkspaceTask | null>(null)
 
   // 批量操作加载状态：记录哪些卡片正在执行批量操作
   const [batchDeepeningCardIds, setBatchDeepeningCardIds] = useState<Set<number>>(new Set())
   const [batchRegeneratingCardIds, setBatchRegeneratingCardIds] = useState<Set<number>>(new Set())
+  const [batchTranslatingCardIds, setBatchTranslatingCardIds] = useState<Set<number>>(new Set())
   const [batchGeneratingImageCardIds, setBatchGeneratingImageCardIds] = useState<Set<number>>(new Set())
   // 单张生图状态：记录哪些卡片正在单独生图
   const [generatingImageCardIds, setGeneratingImageCardIds] = useState<Set<number>>(new Set())
@@ -711,6 +830,24 @@ export default function WorkspacePage() {
     setActiveTaskId(task.id)
   }
 
+  const handleTaskRename = async (taskId: number, title: string) => {
+    try {
+      const res = await apiFetch(`/api/workspace/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: { title },
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '重命名失败')
+      setTasks(prev => prev.map(task => task.id === taskId ? { ...task, title } : task))
+      setActiveTask(prev => prev?.id === taskId ? { ...prev, title } : prev)
+      toast.success('任务名称已更新')
+      return true
+    } catch (error) {
+      toast.error((error as Error).message || '重命名失败')
+      return false
+    }
+  }
+
   const handleDeleteTask = async (taskId: number) => {
     try {
       const res = await apiFetch(`/api/workspace/tasks/${taskId}`, {
@@ -759,13 +896,14 @@ export default function WorkspacePage() {
     }
   }
 
-  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; regenTemplate: Template | null; extractTemplate?: Template | null; imageModel: ImageModel | null; size: string | null }) => {
+  const handleTaskCreated = (task: WorkspaceTask, config?: { fissionTemplate: Template | null; refineTemplate: Template | null; regenTemplate: Template | null; extractTemplate?: Template | null; translateTemplate?: Template | null; imageModel: ImageModel | null; size: string | null }) => {
     if (config) {
       const nextConfig = {
         fissionTemplate: config.fissionTemplate ?? selectedFissionTemplate,
         refineTemplate: config.refineTemplate ?? selectedDeepenTemplate,
         regenTemplate: config.regenTemplate ?? selectedRegenTemplate,
         extractTemplate: config.extractTemplate ?? selectedExtractTemplate,
+        translateTemplate: config.translateTemplate ?? selectedTranslateTemplate,
         imageModel: config.imageModel ?? selectedImageModel,
         size: config.size ?? selectedSize,
       }
@@ -773,6 +911,7 @@ export default function WorkspacePage() {
       setSelectedDeepenTemplate(nextConfig.refineTemplate)
       setSelectedRegenTemplate(nextConfig.regenTemplate)
       setSelectedExtractTemplate(nextConfig.extractTemplate)
+      setSelectedTranslateTemplate(nextConfig.translateTemplate)
       setSelectedImageModel(nextConfig.imageModel)
       setSelectedSize(nextConfig.size)
       saveStoredGenerationConfig(nextConfig)
@@ -1005,7 +1144,7 @@ export default function WorkspacePage() {
     }
   }
 
-  const handleBatchGenerateImage = async () => {
+  const handleBatchGenerateImage = async (languagePreference?: BatchGenerationLanguage) => {
     if (!selectedImageModel || !selectedSize) {
       toast.error('请先选择图片模型和尺寸')
       return
@@ -1015,7 +1154,7 @@ export default function WorkspacePage() {
     try {
       const res = await apiFetch('/api/workspace/cards/batch-generate-image', {
         method: 'POST',
-        body: { card_ids: ids, api_id: selectedImageModel.id, size: selectedSize },
+        body: { card_ids: ids, api_id: selectedImageModel.id, size: selectedSize, language_preference: languagePreference },
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '批量生图提交失败')
@@ -1097,6 +1236,49 @@ export default function WorkspacePage() {
     }
   }
 
+  const handleBatchTranslate = async () => {
+    if (!selectedTranslateTemplate) {
+      toast.error('请先选择提示词翻译模板')
+      return
+    }
+    const ids = [...selectedCardIds]
+    setBatchTranslatingCardIds(new Set(ids))
+    try {
+      const res = await apiFetch('/api/workspace/cards/batch-translate-prompt', {
+        method: 'POST',
+        body: { card_ids: ids, template_id: selectedTranslateTemplate.id },
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '批量翻译失败')
+      const submittedIds: number[] = data.card_ids || []
+      const skippedIds: number[] = data.skipped_card_ids || []
+      setBatchTranslatingCardIds(new Set(submittedIds))
+      setCards(prev => prev.map(card => submittedIds.includes(card.id) ? { ...card, translation_status: 'translating' } : card))
+      toast.success(`已提交 ${submittedIds.length} 张翻译任务${skippedIds.length ? `，跳过 ${skippedIds.length} 张有效译文` : ''}`)
+      setSelectedCardIds(new Set())
+      setBatchMode(false)
+      const poll = window.setInterval(async () => {
+        if (!activeTaskId) return
+        try {
+          const data = await apiFetch(`/api/workspace/tasks/${activeTaskId}/cards?page_size=${WORKSPACE_CARDS_PAGE_SIZE}`).then(r => r.json())
+          const refreshed: PromptCard[] = data.cards || []
+          const pendingIds = new Set<number>()
+          setCards(prev => prev.map(card => {
+            const next = refreshed.find(item => item.id === card.id)
+            if (!next) return card
+            if (submittedIds.includes(card.id) && next.translation_status === 'translating') pendingIds.add(card.id)
+            return submittedIds.includes(card.id) ? next : card
+          }))
+          setBatchTranslatingCardIds(pendingIds)
+          if (pendingIds.size === 0) window.clearInterval(poll)
+        } catch {}
+      }, 3000)
+    } catch (err) {
+      toast.error((err as Error).message || '批量翻译提交失败')
+      setBatchTranslatingCardIds(new Set())
+    }
+  }
+
   const handleBatchReplacePromptCompleted = async (cardCount: number) => {
     if (activeTaskId) {
       await fetchCards(activeTaskId)
@@ -1158,7 +1340,7 @@ export default function WorkspacePage() {
             ))}
           </div>
 
-          <Button size="sm" className="w-full h-8 gap-1.5 text-xs rounded-xl" onClick={() => setShowNewTask(true)}>
+          <Button size="sm" className="w-full h-8 gap-1.5 text-xs rounded-lg" onClick={() => setShowNewTask(true)}>
             <Plus className="h-3.5 w-3.5" />
             新建任务
           </Button>
@@ -1182,6 +1364,7 @@ export default function WorkspacePage() {
                   onClick={() => handleTaskSelect(task)}
                   onPin={handlePinTask}
                   onDelete={handleRequestDeleteTask}
+                  onRename={handleTaskRename}
                 />
               ))}
               {hasMoreTasks && (
@@ -1238,8 +1421,8 @@ export default function WorkspacePage() {
               >
                 生成配置
                 <span className="max-w-[180px] truncate text-white/80">
-                  {selectedDeepenTemplate || selectedExtractTemplate || selectedImageModel || selectedSize
-                    ? [selectedDeepenTemplate?.name, selectedExtractTemplate?.name, selectedImageModel?.display_name || selectedImageModel?.name, selectedSize].filter(Boolean).join(' / ')
+                  {selectedDeepenTemplate || selectedExtractTemplate || selectedTranslateTemplate || selectedImageModel || selectedSize
+                    ? [selectedDeepenTemplate?.name, selectedExtractTemplate?.name, selectedTranslateTemplate?.name, selectedImageModel?.display_name || selectedImageModel?.name, selectedSize].filter(Boolean).join(' / ')
                     : '未选择'}
                 </span>
                 <ChevronDown className="h-3 w-3" />
@@ -1320,6 +1503,24 @@ export default function WorkspacePage() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" sideOffset={6}>
                           <DropdownMenuItem
+                            onClick={() => setShowBatchImageUploadDialog(true)}
+                          >
+                            <ImagePlus className="h-4 w-4 mr-2" />
+                            批量上传图片
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (!selectedTranslateTemplate) {
+                                toast.error('请先在生成配置中选择提示词翻译模板')
+                                return
+                              }
+                              setBatchConfirm({ action: '批量翻译提示词', count: selectedCardIds.size, onConfirm: handleBatchTranslate })
+                            }}
+                          >
+                            <Languages className="h-4 w-4 mr-2" />
+                            批量翻译提示词
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
                             onClick={() => {
                               if (!selectedRegenTemplate) {
                                 toast.error('请先在生成配置中选择重新生成模板')
@@ -1369,10 +1570,14 @@ export default function WorkspacePage() {
                                 toast.error('请先在生成配置中选择图片模型和尺寸')
                                 return
                               }
+                              const selectedCards = cards.filter(card => selectedCardIds.has(card.id))
+                              const languageSummary = getBatchGenerationLanguageSummary(selectedCards, 'zh')
                               setBatchConfirm({
                                 action: '批量生成图片',
                                 count: selectedCardIds.size,
-                                onConfirm: handleBatchGenerateImage,
+                                generationLanguage: languageSummary.requiresLanguageSelection ? 'zh' : undefined,
+                                languageSummary,
+                                onConfirm: () => handleBatchGenerateImage(languageSummary.requiresLanguageSelection ? 'zh' : undefined),
                               })
                             }}
                           >
@@ -1447,6 +1652,7 @@ export default function WorkspacePage() {
                   flipAllToImage={flipAllToImage}
                   selectedDeepenTemplate={selectedDeepenTemplate}
                   selectedRegenTemplate={selectedRegenTemplate}
+                  selectedTranslateTemplate={selectedTranslateTemplate}
                   selectedImageModel={selectedImageModel}
                   selectedSize={selectedSize}
                   onToggleSelect={toggleCardSelection}
@@ -1455,6 +1661,7 @@ export default function WorkspacePage() {
                   onCardGeneratingImage={handleCardGeneratingImage}
                   batchDeepeningCardIds={batchDeepeningCardIds}
                   batchRegeneratingCardIds={batchRegeneratingCardIds}
+                  batchTranslatingCardIds={batchTranslatingCardIds}
                   batchGeneratingImageCardIds={batchGeneratingImageCardIds}
                 />
               )}
@@ -1482,6 +1689,24 @@ export default function WorkspacePage() {
         open={showNewTask}
         onClose={() => setShowNewTask(false)}
         onCreated={handleTaskCreated}
+        selectedImageModel={selectedImageModel}
+      />
+
+      <WorkspaceBatchImageUploadDialog
+        open={showBatchImageUploadDialog}
+        cardIds={Array.from(selectedCardIds)}
+        onClose={() => setShowBatchImageUploadDialog(false)}
+        onCompleted={imagesByCard => {
+          setCardImagesMap(previous => {
+            const next = new Map(previous)
+            Object.entries(imagesByCard).forEach(([cardId, images]) => {
+              const existing = next.get(Number(cardId)) || []
+              const merged = [...images, ...existing.filter(image => !images.some(item => item.id === image.id))]
+              next.set(Number(cardId), merged)
+            })
+            return next
+          })
+        }}
       />
 
       <WorkspaceTemplateSelectDialog
@@ -1529,6 +1754,7 @@ export default function WorkspacePage() {
         selectedRefineTemplate={selectedDeepenTemplate}
         selectedRegenTemplate={selectedRegenTemplate}
         selectedExtractTemplate={selectedExtractTemplate}
+        selectedTranslateTemplate={selectedTranslateTemplate}
         selectedImageModel={selectedImageModel}
         selectedSize={selectedSize}
         onApply={config => {
@@ -1536,6 +1762,7 @@ export default function WorkspacePage() {
           setSelectedDeepenTemplate(config.refineTemplate)
           setSelectedRegenTemplate(config.regenTemplate)
           setSelectedExtractTemplate(config.extractTemplate)
+          setSelectedTranslateTemplate(config.translateTemplate)
           setSelectedImageModel(config.imageModel)
           setSelectedSize(config.size)
           saveStoredGenerationConfig(config)
@@ -1604,6 +1831,14 @@ export default function WorkspacePage() {
           open={true}
           action={batchConfirm.action}
           count={batchConfirm.count}
+          generationLanguage={batchConfirm.generationLanguage}
+          languageSummary={batchConfirm.languageSummary}
+          onLanguagePreferenceChange={language => setBatchConfirm(current => current ? {
+            ...current,
+            generationLanguage: language,
+            languageSummary: getBatchGenerationLanguageSummary(cards.filter(card => selectedCardIds.has(card.id)), language),
+            onConfirm: () => handleBatchGenerateImage(language),
+          } : null)}
           onConfirm={() => { batchConfirm.onConfirm(); setBatchConfirm(null) }}
           onClose={() => setBatchConfirm(null)}
         />

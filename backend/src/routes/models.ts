@@ -5,6 +5,7 @@ import fs from 'fs';
 import { query } from '../db/index.js';
 import { authMiddleware, adminMiddlewareRealtime, AuthRequest } from '../middleware/auth.js';
 import { encrypt } from '../services/crypto.js';
+import { DEFAULT_IMAGE_API_FORMAT, DEFAULT_REFERENCE_IMAGE_FIELD, validateImageModelConfig } from '../lib/image-model-config.js';
 
 export const modelRouter = Router();
 
@@ -90,9 +91,11 @@ modelRouter.get('/all', authMiddleware, adminMiddlewareRealtime, async (_req: Au
 modelRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, visible_in_workspace, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count } = req.body;
+    const resolvedApiFormat = api_format || DEFAULT_IMAGE_API_FORMAT;
+    validateImageModelConfig({ api_format: resolvedApiFormat, extra_config });
     const insertResult = query(
       'INSERT INTO models (name, display_name, api_endpoint, api_key_encrypted, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, visible_in_workspace, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, display_name, api_endpoint, api_key ? encrypt(api_key) : null, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, visible_in_workspace !== false ? 1 : 0, visible_in_product ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || 'image_url', api_format || 'openai', extra_config || '{}', default_image_count || 1]
+      [name, display_name, api_endpoint, api_key ? encrypt(api_key) : null, cost_per_image || 1, max_concurrent || 5, max_retries || 3, api_timeout || 120, task_timeout || 0, icon_url || null, supported_sizes || null, visible_in_generate !== false ? 1 : 0, visible_in_canvas !== false ? 1 : 0, visible_in_workspace !== false ? 1 : 0, visible_in_product ? 1 : 0, supports_reference_image ? 1 : 0, max_reference_images || 1, reference_image_field || DEFAULT_REFERENCE_IMAGE_FIELD, resolvedApiFormat, extra_config || '{}', default_image_count || 1]
     );
     const result = query(
       'SELECT id, name, display_name, icon_url, supported_sizes, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, default_image_count, visible_in_generate, visible_in_canvas, visible_in_workspace, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config FROM models WHERE id = ?',
@@ -100,6 +103,9 @@ modelRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthR
     );
     return res.status(201).json({ model: result.rows[0] });
   } catch (err) {
+    if (err instanceof Error && !err.message.includes('UNIQUE constraint failed')) {
+      return res.status(400).json({ error: err.message });
+    }
     if ((err as any).message?.includes('UNIQUE constraint failed')) {
       return res.status(409).json({ error: '该模型标识与接口地址的组合已存在' });
     }
@@ -110,6 +116,15 @@ modelRouter.post('/', authMiddleware, adminMiddlewareRealtime, async (req: AuthR
 modelRouter.put('/:id', authMiddleware, adminMiddlewareRealtime, async (req: AuthRequest, res) => {
   try {
     const { name, display_name, api_endpoint, api_key, cost_per_image, max_concurrent, max_retries, api_timeout, task_timeout, is_active, icon_url, supported_sizes, visible_in_generate, visible_in_canvas, visible_in_workspace, visible_in_product, supports_reference_image, max_reference_images, reference_image_field, api_format, extra_config, default_image_count } = req.body;
+    if (api_format !== undefined || extra_config !== undefined || is_active === true) {
+      const existingResult = query('SELECT api_format, extra_config FROM models WHERE id = ?', [req.params.id]);
+      if (existingResult.rows.length === 0) return res.status(404).json({ error: '模型不存在' });
+      const existing = existingResult.rows[0];
+      validateImageModelConfig({
+        api_format: api_format ?? existing.api_format,
+        extra_config: extra_config ?? existing.extra_config,
+      });
+    }
     
     const updateFields: string[] = [];
     const updateValues: any[] = [];
@@ -156,7 +171,8 @@ modelRouter.put('/:id', authMiddleware, adminMiddlewareRealtime, async (req: Aut
       return res.status(404).json({ error: '模型不存在' });
     }
     return res.json({ model: result.rows[0] });
-  } catch {
+  } catch (err) {
+    if (err instanceof Error) return res.status(400).json({ error: err.message });
     return res.status(500).json({ error: '更新模型失败' });
   }
 });

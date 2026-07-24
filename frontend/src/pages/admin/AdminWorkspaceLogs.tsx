@@ -4,7 +4,9 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { summarizeImageResponseBody } from '@/lib/workspace-log-summary'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import Spinner from '@/components/Spinner'
 
@@ -16,6 +18,7 @@ interface WorkspaceLog {
   api_config_name: string | null
   workspace_task_id: number | null
   card_id: number | null
+  generation_task_id: number | null
   request_params: string | null
   response_status: string
   response_body: string | null
@@ -32,6 +35,7 @@ export default function AdminWorkspaceLogs() {
   const [page, setPage] = useState(1)
   const [typeFilter, setTypeFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [generationTaskIdFilter, setGenerationTaskIdFilter] = useState('')
   const [detailLog, setDetailLog] = useState<WorkspaceLog | null>(null)
 
   const pageSize = 30
@@ -44,6 +48,7 @@ export default function AdminWorkspaceLogs() {
       const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
       if (typeFilter !== 'all') params.set('api_type', typeFilter)
       if (statusFilter !== 'all') params.set('status', statusFilter)
+      if (generationTaskIdFilter.trim()) params.set('generation_task_id', generationTaskIdFilter.trim())
       const res = await apiFetch(`/api/admin/workspace/workspace-logs?${params}`)
       const data = await res.json()
       setLogs(data.logs || [])
@@ -78,6 +83,13 @@ export default function AdminWorkspaceLogs() {
             <SelectItem value="failure">失败</SelectItem>
           </SelectContent>
         </Select>
+        <Input
+          value={generationTaskIdFilter}
+          onChange={event => { setGenerationTaskIdFilter(event.target.value); setPage(1) }}
+          inputMode="numeric"
+          placeholder="生成任务 ID"
+          className="h-8 w-36 text-sm"
+        />
         <span className="text-xs text-muted-foreground ml-auto">共 {total} 条</span>
       </div>
 
@@ -90,7 +102,7 @@ export default function AdminWorkspaceLogs() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
-                {['时间', '类型', '接口', '用户', '状态', '耗时', '操作'].map(h => (
+                {['时间', '类型', '接口', '用户', '生成任务', '状态', '耗时', '操作'].map(h => (
                   <th key={h} className="px-3 py-2.5 text-left font-medium text-xs text-muted-foreground">{h}</th>
                 ))}
               </tr>
@@ -108,6 +120,7 @@ export default function AdminWorkspaceLogs() {
                   </td>
                   <td className="px-3 py-2 text-xs max-w-[120px] truncate">{log.api_config_name || '-'}</td>
                   <td className="px-3 py-2 text-xs">{log.username || '-'}</td>
+                  <td className="px-3 py-2 text-xs font-mono">{log.generation_task_id || '-'}</td>
                   <td className="px-3 py-2">
                     <Badge variant={log.response_status === 'success' ? 'default' : log.response_status === 'pending' ? 'secondary' : 'destructive'} className="text-[10px]">
                       {log.response_status === 'success' ? '成功' : log.response_status === 'pending' ? '进行中' : '失败'}
@@ -152,6 +165,7 @@ export default function AdminWorkspaceLogs() {
                 ['耗时', detailLog.duration_ms ? `${detailLog.duration_ms}ms` : '-'],
                 ['任务ID', detailLog.workspace_task_id || '-'],
                 ['卡片ID', detailLog.card_id || '-'],
+                ['生成任务ID', detailLog.generation_task_id || '-'],
               ].map(([label, value]) => (
                 <div key={String(label)} className="flex gap-3">
                   <span className="text-muted-foreground w-16 shrink-0">{label}</span>
@@ -173,7 +187,7 @@ export default function AdminWorkspaceLogs() {
               {detailLog.response_body && (
                 <div>
                   <p className="text-muted-foreground mb-1">响应内容</p>
-                  <pre className="text-xs bg-muted rounded p-2 overflow-x-auto max-h-32">{detailLog.response_body}</pre>
+                  <pre className="text-xs bg-muted rounded p-2 overflow-x-auto max-h-32">{summarizeImageResponseBody(detailLog.response_body)}</pre>
                 </div>
               )}
             </div>

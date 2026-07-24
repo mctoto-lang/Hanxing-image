@@ -4,12 +4,16 @@ import fs from 'fs';
 import path from 'path';
 import { query, transaction } from '../db/index.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
-import { fissionPrompts, extractPromptDescriptions, extractNumberedPromptReplacements, deepenPrompt } from '../services/workspaceAI.js';
+import { fissionPrompts, extractPromptDescriptions, extractNumberedPromptReplacements, deepenPrompt, translatePrompt } from '../services/workspaceAI.js';
 import { taskQueue } from '../services/queue.js';
 import { chatTaskQueue } from '../services/chatQueue.js';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { zipSync } from 'fflate';
+import { normalizeWorkspaceReferenceImages, parseWorkspaceReferenceImages } from '../lib/workspace-reference-images.js';
+import { normalizeBatchImageRequest, validateCustomTaskRequest } from '../lib/workspace-batch-images.js';
+import { validateGenerationCapabilities } from '../lib/image-model-config.js';
+import { workspaceImageHistoryQuery } from './workspace-history-query.js';
 
 export const workspaceRouter = Router();
 
@@ -142,8 +146,16 @@ async function buildWorkspaceExportZip(userId: number, taskId: number, cardIds?:
   };
 }
 
-type SubmitSuccess = { cardImageId: number };
+type SubmitSuccess = { cardImageId: number; generationTaskId: number };
 type SubmitError = { status: number; error: string };
+
+function normalizeReferenceImages(value: unknown, maxCount: number): string[] {
+  return normalizeWorkspaceReferenceImages(value, maxCount);
+}
+
+function parseReferenceImages(value: unknown): string[] {
+  return parseWorkspaceReferenceImages(value);
+}
 
 async function submitWorkspaceImageTask(
   userId: number,
@@ -152,6 +164,7 @@ async function submitWorkspaceImageTask(
   prompt: string,
   workspaceTaskId: number,
   cardId: number,
+  referenceImages: string[] = [],
   taskType: 'workspace_single' | 'workspace_batch' = 'workspace_single'
 ): Promise<SubmitSuccess | SubmitError> {
   const userResult = query(
@@ -167,6 +180,13 @@ async function submitWorkspaceImageTask(
   const model = modelResult.rows[0];
   if (!model) return { status: 404, error: '模型不存在或已禁用' };
   if (!model.visible_in_workspace) return { status: 400, error: '该模型不可用于批量生图' };
+
+  let modelReferenceImages: string[];
+  try {
+    modelReferenceImages = validateGenerationCapabilities(model, referenceImages, size);
+  } catch (error) {
+    return { status: 400, error: (error as Error).message };
+  }
 
   const allowedModels: string[] = (() => {
     try { return JSON.parse(user.allowed_models || '[]'); } catch { return []; }
@@ -211,15 +231,15 @@ async function submitWorkspaceImageTask(
       }
 
       const cardImageInsert = query(
-        `INSERT INTO card_images (card_id, image_api_id, image_url, size, status) VALUES (?, ?, '', ?, 'pending')`,
-        [cardId, modelId, size]
+        `INSERT INTO card_images (card_id, image_api_id, image_url, size, status, generation_prompt) VALUES (?, ?, '', ?, 'pending', ?)`,
+        [cardId, modelId, size, prompt]
       );
       const newCardImageId = cardImageInsert.lastInsertRowid!;
 
       const taskInsert = query(
         `INSERT INTO generation_tasks (user_id, model_id, prompt, image_size, image_count, status, priority, credits_charged, credits_type, source, task_type, task_uuid, reference_images)
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'creative', 'workspace', ?, ?, '[]')`,
-        [userId, modelId, prompt, size, imageCount, user.priority || 0, totalImageCost, taskType, taskUuid]
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'creative', 'workspace', ?, ?, ?)`,
+        [userId, modelId, prompt, size, imageCount, user.priority || 0, totalImageCost, taskType, taskUuid, JSON.stringify(modelReferenceImages)]
       );
       const newGenTaskId = taskInsert.lastInsertRowid!;
 
@@ -240,7 +260,7 @@ async function submitWorkspaceImageTask(
   const taskRow = query('SELECT * FROM generation_tasks WHERE id = ?', [genTaskId]);
   taskQueue.addTask(taskRow.rows[0]);
 
-  return { cardImageId };
+  return { cardImageId, generationTaskId: genTaskId };
 }
 
 workspaceRouter.get('/tasks', authMiddleware, async (req: AuthRequest, res) => {
@@ -370,6 +390,48 @@ workspaceRouter.get('/tasks/pinned', authMiddleware, async (req: AuthRequest, re
 
 workspaceRouter.post('/tasks', authMiddleware, async (req: AuthRequest, res) => {
   try {
+    if (req.body.mode === 'custom') {
+      const custom = validateCustomTaskRequest(req.body);
+      let referenceImages = custom.imageUrls;
+      let imageApiId: number | null = null;
+      if (referenceImages.length) {
+        imageApiId = Number(req.body.api_id);
+        if (!Number.isInteger(imageApiId) || imageApiId <= 0) return res.status(400).json({ error: '请选择支持参考图的图片模型' });
+        const model = query('SELECT supports_reference_image, max_reference_images FROM models WHERE id = ? AND is_active = 1 AND visible_in_workspace = 1', [imageApiId]).rows[0];
+        if (!model) return res.status(400).json({ error: '模型不可用于批量生图' });
+        if (!model.supports_reference_image) return res.status(400).json({ error: '当前模型不支持参考图' });
+        const maxCount = Math.max(1, Number(model.max_reference_images) || 1);
+        if (referenceImages.length > maxCount) return res.status(400).json({ error: `当前模型最多支持 ${maxCount} 张参考图` });
+        referenceImages = normalizeReferenceImages(referenceImages, maxCount);
+      }
+
+      const created = transaction(() => {
+        const taskInsert = query(
+          `INSERT INTO workspace_tasks (user_id, title, theme_prompt, template_id, status, card_count)
+           VALUES (?, ?, ?, NULL, 'completed', ?)`,
+          [req.userId, custom.title, custom.prompt, custom.cardCount]
+        );
+        const taskId = taskInsert.lastInsertRowid!;
+        const cards = [];
+        for (let index = 1; index <= custom.cardCount; index++) {
+          const cardInsert = query(
+            `INSERT INTO prompt_cards (task_id, card_index, prompt, reference_images) VALUES (?, ?, ?, ?)`,
+            [taskId, index, custom.prompt, JSON.stringify(referenceImages)]
+          );
+          const cardId = cardInsert.lastInsertRowid!;
+          for (const imageUrl of referenceImages) {
+            query(
+              `INSERT INTO card_images (card_id, image_api_id, image_url, status, source) VALUES (?, ?, ?, 'completed', 'uploaded')`,
+              [cardId, imageApiId, imageUrl]
+            );
+          }
+          cards.push(query('SELECT * FROM prompt_cards WHERE id = ?', [cardId]).rows[0]);
+        }
+        return { task: query('SELECT * FROM workspace_tasks WHERE id = ?', [taskId]).rows[0], cards };
+      });
+      return res.status(201).json(created);
+    }
+
     const { title, theme_prompt, template_id, mode, extract_template_id } = req.body;
     const taskMode = mode === 'extract' ? 'extract' : 'smart';
     const promptTemplateId = taskMode === 'extract' ? extract_template_id : template_id;
@@ -468,6 +530,104 @@ workspaceRouter.get('/tasks/:id/status', authMiddleware, async (req: AuthRequest
     return res.json(result.rows[0]);
   } catch {
     return res.status(500).json({ error: '获取任务状态失败' });
+  }
+});
+
+workspaceRouter.patch('/tasks/:id', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title) return res.status(400).json({ error: '任务名称不能为空' });
+    if (title.length > 200) return res.status(400).json({ error: '任务名称不能超过 200 个字符' });
+
+    const existing = query(
+      'SELECT id FROM workspace_tasks WHERE id = ? AND user_id = ?',
+      [req.params.id, req.userId]
+    );
+    if (!existing.rows[0]) return res.status(404).json({ error: '任务不存在' });
+
+    query(
+      'UPDATE workspace_tasks SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+      [title, req.params.id, req.userId]
+    );
+    const updated = query(
+      'SELECT t.*, pt.name as template_name FROM workspace_tasks t LEFT JOIN prompt_templates pt ON t.template_id = pt.id WHERE t.id = ? AND t.user_id = ?',
+      [req.params.id, req.userId]
+    );
+    return res.json({ task: updated.rows[0] });
+  } catch {
+    return res.status(500).json({ error: '更新任务名称失败' });
+  }
+});
+
+workspaceRouter.get('/templates', authMiddleware, async (req, res) => {
+  try {
+    const type = req.query.type as string;
+    if (!['fission', 'deepen', 'regenerate', 'extract', 'translate'].includes(type)) {
+      return res.status(400).json({ error: '无效的模板类型' });
+    }
+    const result = query(
+      `SELECT pt.*, c.name as api_name FROM prompt_templates pt
+       JOIN chat_api_configs c ON pt.chat_api_id = c.id
+       WHERE pt.type = ? AND c.status = 'active' ORDER BY pt.created_at DESC`,
+      [type]
+    );
+    return res.json({ templates: result.rows });
+  } catch {
+    return res.status(500).json({ error: '获取模板列表失败' });
+  }
+});
+
+workspaceRouter.post('/cards/:id/translate-prompt', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { template_id } = req.body;
+    if (!template_id) return res.status(400).json({ error: '请选择提示词翻译模板' });
+    const cardResult = query(
+      `SELECT pc.id, pc.task_id, pc.prompt FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      [req.params.id, req.userId]
+    );
+    const card = cardResult.rows[0];
+    if (!card) return res.status(404).json({ error: '卡片不存在' });
+    const translatedPrompt = await translatePrompt(Number(template_id), card.prompt, card.id, card.task_id, req.userId!);
+    query(
+      "UPDATE prompt_cards SET translated_prompt = ?, translation_source_prompt = ?, translation_status = 'synced', translation_template_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [translatedPrompt, card.prompt, template_id, card.id]
+    );
+    return res.json({ translated_prompt: translatedPrompt, translation_source_prompt: card.prompt, translation_status: 'synced' });
+  } catch (err) {
+    return res.status(500).json({ error: `翻译失败: ${(err as Error).message}` });
+  }
+});
+
+workspaceRouter.post('/cards/batch-translate-prompt', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { card_ids, template_id } = req.body;
+    if (!Array.isArray(card_ids) || card_ids.length === 0 || !template_id) return res.status(400).json({ error: '参数不完整' });
+    const template = query(
+      "SELECT pt.chat_api_id FROM prompt_templates pt JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = 'translate' AND c.status = 'active'",
+      [template_id]
+    ).rows[0];
+    if (!template) return res.status(404).json({ error: '提示词翻译模板不存在或不可用' });
+    const placeholders = card_ids.map(() => '?').join(',');
+    const cards = query(
+      `SELECT pc.id, pc.task_id, pc.prompt, pc.translated_prompt, pc.translation_source_prompt FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id IN (${placeholders}) AND t.user_id = ?`,
+      [...card_ids, req.userId]
+    ).rows as any[];
+    const submitted: number[] = [];
+    const skipped: number[] = [];
+    for (const card of cards) {
+      if (card.translated_prompt && card.translation_source_prompt === card.prompt) { skipped.push(card.id); continue; }
+      const taskResult = query(
+        `INSERT INTO chat_tasks (user_id, chat_api_id, task_type, card_id, workspace_task_id, template_id, original_prompt, status) VALUES (?, ?, 'translate', ?, ?, ?, ?, 'queued')`,
+        [req.userId!, template.chat_api_id, card.id, card.task_id, template_id, card.prompt]
+      );
+      query("UPDATE prompt_cards SET translation_status = 'translating', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [card.id]);
+      const task = query('SELECT * FROM chat_tasks WHERE id = ?', [taskResult.lastInsertRowid]).rows[0];
+      if (task) chatTaskQueue.addTask(task);
+      submitted.push(card.id);
+    }
+    return res.status(202).json({ submitted: submitted.length, card_ids: submitted, skipped_card_ids: skipped });
+  } catch (err) {
+    return res.status(500).json({ error: `批量翻译提交失败: ${(err as Error).message}` });
   }
 });
 
@@ -805,8 +965,10 @@ workspaceRouter.post('/tasks/:id/cards/batch-replace-prompts', authMiddleware, a
 
 workspaceRouter.patch('/cards/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { prompt } = req.body;
-    if (!prompt) return res.status(400).json({ error: '提示词不能为空' });
+    const { prompt, display_language } = req.body;
+    if (prompt !== undefined && (typeof prompt !== 'string' || !prompt.trim())) return res.status(400).json({ error: '提示词不能为空' });
+    if (display_language !== undefined && !['zh', 'en'].includes(display_language)) return res.status(400).json({ error: '显示语言无效' });
+    if (prompt === undefined && display_language === undefined) return res.status(400).json({ error: '没有需要保存的内容' });
 
     const cardCheck = query(
       `SELECT pc.id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
@@ -814,10 +976,13 @@ workspaceRouter.patch('/cards/:id', authMiddleware, async (req: AuthRequest, res
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
-    query(
-      'UPDATE prompt_cards SET prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [prompt, req.params.id]
-    );
+    const fields: string[] = [];
+    const params: any[] = [];
+    if (prompt !== undefined) { fields.push('prompt = ?'); params.push(prompt.trim()); }
+    if (display_language !== undefined) { fields.push('display_language = ?'); params.push(display_language); }
+    fields.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(req.params.id);
+    query(`UPDATE prompt_cards SET ${fields.join(', ')} WHERE id = ?`, params);
     return res.json({ message: '已保存' });
   } catch {
     return res.status(500).json({ error: '保存提示词失败' });
@@ -827,7 +992,7 @@ workspaceRouter.patch('/cards/:id', authMiddleware, async (req: AuthRequest, res
 workspaceRouter.delete('/cards/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const cardCheck = query(
-      `SELECT pc.id, pc.task_id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      `SELECT pc.id, pc.task_id, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
       [req.params.id, req.userId]
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
@@ -909,7 +1074,7 @@ workspaceRouter.post('/cards/:id/deepen', authMiddleware, async (req: AuthReques
     if (!prompt || !template_id) return res.status(400).json({ error: '提示词和模板不能为空' });
 
     const cardCheck = query(
-      `SELECT pc.id, pc.task_id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      `SELECT pc.id, pc.task_id, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
       [req.params.id, req.userId]
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
@@ -957,17 +1122,17 @@ workspaceRouter.post('/cards/:id/generate-image', authMiddleware, async (req: Au
     if (!prompt || !api_id || !size) return res.status(400).json({ error: '提示词、模型和尺寸不能为空' });
 
     const cardCheck = query(
-      `SELECT pc.id, pc.task_id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      `SELECT pc.id, pc.task_id, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
       [req.params.id, req.userId]
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
-    const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, prompt, cardCheck.rows[0].task_id, parseInt(req.params.id as string), 'workspace_single');
+    const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, prompt, cardCheck.rows[0].task_id, parseInt(req.params.id as string), parseReferenceImages(cardCheck.rows[0].reference_images), 'workspace_single');
     if ('error' in submitResult) {
       return res.status(submitResult.status).json({ error: submitResult.error });
     }
 
-    return res.status(202).json({ card_image_id: submitResult.cardImageId, status: 'pending' });
+    return res.status(202).json({ card_image_id: submitResult.cardImageId, generation_task_id: submitResult.generationTaskId, status: 'pending' });
   } catch {
     return res.status(500).json({ error: '提交生图任务失败' });
   }
@@ -979,17 +1144,17 @@ workspaceRouter.post('/cards/:id/regenerate-image', authMiddleware, async (req: 
     if (!prompt || !api_id || !size) return res.status(400).json({ error: '提示词、模型和尺寸不能为空' });
 
     const cardCheck = query(
-      `SELECT pc.id, pc.task_id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      `SELECT pc.id, pc.task_id, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
       [req.params.id, req.userId]
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
 
-    const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, prompt, cardCheck.rows[0].task_id, parseInt(req.params.id as string), 'workspace_single');
+    const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, prompt, cardCheck.rows[0].task_id, parseInt(req.params.id as string), parseReferenceImages(cardCheck.rows[0].reference_images), 'workspace_single');
     if ('error' in submitResult) {
       return res.status(submitResult.status).json({ error: submitResult.error });
     }
 
-    return res.status(202).json({ card_image_id: submitResult.cardImageId, status: 'pending' });
+    return res.status(202).json({ card_image_id: submitResult.cardImageId, generation_task_id: submitResult.generationTaskId, status: 'pending' });
   } catch {
     return res.status(500).json({ error: '提交重新生图任务失败' });
   }
@@ -997,32 +1162,38 @@ workspaceRouter.post('/cards/:id/regenerate-image', authMiddleware, async (req: 
 
 workspaceRouter.post('/cards/batch-generate-image', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { card_ids, api_id, size } = req.body;
-    if (!Array.isArray(card_ids) || card_ids.length === 0 || !api_id || !size) {
+    const { card_ids, api_id, size, language_preference } = req.body;
+    if (!Array.isArray(card_ids) || card_ids.length === 0 || !api_id || !size || (language_preference && !['zh', 'en'].includes(language_preference))) {
       return res.status(400).json({ error: '参数不完整' });
     }
 
     const placeholders = card_ids.map(() => '?').join(',');
     const cards = query(
-      `SELECT pc.id, pc.task_id, pc.prompt FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id IN (${placeholders}) AND t.user_id = ?`,
+      `SELECT pc.id, pc.task_id, pc.prompt, pc.translated_prompt, pc.translation_source_prompt, pc.translation_status, pc.display_language, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id IN (${placeholders}) AND t.user_id = ?`,
       [...card_ids, req.userId]
     );
 
     if (cards.rows.length === 0) return res.status(404).json({ error: '未找到有权操作的卡片' });
 
-    const submitted: number[] = [];
+    const submitted: { card_id: number; card_image_id: number; generation_task_id: number }[] = [];
     const errors: { card_id: number; error: string }[] = [];
 
     for (const card of cards.rows) {
-      const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, card.prompt, card.task_id, card.id, 'workspace_batch');
+      const hasEnglish = Boolean(card.translated_prompt);
+      const generationPrompt = language_preference === 'en'
+        ? (hasEnglish ? card.translated_prompt : card.prompt)
+        : language_preference === 'zh'
+          ? (card.prompt || (hasEnglish ? card.translated_prompt : card.prompt))
+          : (card.display_language === 'en' && card.translated_prompt ? card.translated_prompt : card.prompt);
+      const submitResult = await submitWorkspaceImageTask(req.userId!, api_id, size, generationPrompt, card.task_id, card.id, parseReferenceImages(card.reference_images), 'workspace_batch');
       if ('error' in submitResult) {
         errors.push({ card_id: card.id, error: submitResult.error });
       } else {
-        submitted.push(submitResult.cardImageId);
+        submitted.push({ card_id: card.id, card_image_id: submitResult.cardImageId, generation_task_id: submitResult.generationTaskId });
       }
     }
 
-    return res.status(202).json({ submitted: submitted.length, card_image_ids: submitted, errors });
+    return res.status(202).json({ submitted: submitted.length, card_image_ids: submitted.map(item => item.card_image_id), tasks: submitted, errors });
   } catch {
     return res.status(500).json({ error: '批量生图提交失败' });
   }
@@ -1143,7 +1314,7 @@ workspaceRouter.post('/cards/batch-regenerate-prompt', authMiddleware, async (re
 workspaceRouter.get('/cards/:id/images', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const cardCheck = query(
-      `SELECT pc.id, pc.selected_image_id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      `SELECT pc.id, pc.selected_image_id, pc.reference_images FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
       [req.params.id, req.userId]
     );
     if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
@@ -1158,9 +1329,95 @@ workspaceRouter.get('/cards/:id/images', authMiddleware, async (req: AuthRequest
       [req.params.id]
     );
 
-    return res.json({ images: images.rows });
+    return res.json({ images: images.rows, reference_images: parseReferenceImages(cardCheck.rows[0].reference_images) });
   } catch {
     return res.status(500).json({ error: '获取图片列表失败' });
+  }
+});
+
+workspaceRouter.put('/cards/:id/reference-images', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { api_id, reference_images } = req.body;
+    if (!api_id || !Array.isArray(reference_images)) return res.status(400).json({ error: '参数不完整' });
+
+    const cardCheck = query(
+      `SELECT pc.id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      [req.params.id, req.userId]
+    );
+    if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
+
+    const model = query('SELECT supports_reference_image, max_reference_images FROM models WHERE id = ? AND is_active = 1 AND visible_in_workspace = 1', [api_id]).rows[0];
+    if (!model) return res.status(400).json({ error: '模型不可用于批量生图' });
+    if (!model.supports_reference_image) return res.status(400).json({ error: '当前模型不支持参考图' });
+
+    const maxCount = Math.max(1, Number(model.max_reference_images) || 1);
+    const images = normalizeReferenceImages(reference_images, maxCount);
+    if (normalizeReferenceImages(reference_images, Number.MAX_SAFE_INTEGER).length > maxCount) {
+      return res.status(400).json({ error: `当前模型最多支持 ${maxCount} 张参考图` });
+    }
+    query('UPDATE prompt_cards SET reference_images = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [JSON.stringify(images), req.params.id]);
+    return res.json({ reference_images: images });
+  } catch {
+    return res.status(500).json({ error: '保存参考图失败' });
+  }
+});
+
+workspaceRouter.post('/cards/:id/images/uploaded', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { image_url } = req.body;
+    if (typeof image_url !== 'string' || !image_url.trim()) return res.status(400).json({ error: '图片地址不能为空' });
+    const cardCheck = query(
+      `SELECT pc.id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id = ? AND t.user_id = ?`,
+      [req.params.id, req.userId]
+    );
+    if (!cardCheck.rows[0]) return res.status(404).json({ error: '卡片不存在' });
+    const result = query(
+      `INSERT INTO card_images (card_id, image_api_id, image_url, status, source) VALUES (?, NULL, ?, 'completed', 'uploaded')`,
+      [req.params.id, image_url.trim()]
+    );
+    const image = query('SELECT * FROM card_images WHERE id = ?', [result.lastInsertRowid]).rows[0];
+    return res.status(201).json({ image });
+  } catch {
+    return res.status(500).json({ error: '保存上传图片失败' });
+  }
+});
+
+workspaceRouter.post('/cards/batch-attach-uploaded-images', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { cardIds, imageUrls } = normalizeBatchImageRequest(req.body.card_ids, req.body.image_urls);
+    const placeholders = cardIds.map(() => '?').join(',');
+    const cards = query(
+      `SELECT pc.id FROM prompt_cards pc JOIN workspace_tasks t ON pc.task_id = t.id WHERE pc.id IN (${placeholders}) AND t.user_id = ?`,
+      [...cardIds, req.userId]
+    ).rows;
+    if (cards.length !== cardIds.length) return res.status(404).json({ error: '部分卡片不存在或无权访问' });
+
+    const imagesByCard = transaction(() => {
+      const result: Record<number, any[]> = {};
+      for (const cardId of cardIds) {
+        result[cardId] = [];
+        for (const imageUrl of imageUrls) {
+          const existing = query(
+            `SELECT * FROM card_images WHERE card_id = ? AND image_url = ? AND source = 'uploaded' LIMIT 1`,
+            [cardId, imageUrl]
+          ).rows[0];
+          if (existing) {
+            result[cardId].push(existing);
+            continue;
+          }
+          const insert = query(
+            `INSERT INTO card_images (card_id, image_api_id, image_url, status, source) VALUES (?, NULL, ?, 'completed', 'uploaded')`,
+            [cardId, imageUrl]
+          );
+          result[cardId].push(query('SELECT * FROM card_images WHERE id = ?', [insert.lastInsertRowid]).rows[0]);
+        }
+      }
+      return result;
+    });
+    return res.status(201).json({ updated_card_ids: cardIds, images_by_card: imagesByCard });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '批量保存上传图片失败';
+    return res.status(400).json({ error: message });
   }
 });
 
@@ -1220,14 +1477,7 @@ workspaceRouter.get('/images/history', authMiddleware, async (req: AuthRequest, 
   try {
     const limit = parseInt(req.query.limit as string) || 100;
     const images = query(
-      `SELECT ci.id, ci.image_url, ci.size, ci.created_at, ci.is_selected,
-              pc.prompt, pc.card_index,
-              t.id as task_id, t.title as task_title, t.created_at as task_created_at
-       FROM card_images ci
-       JOIN prompt_cards pc ON ci.card_id = pc.id
-       JOIN workspace_tasks t ON pc.task_id = t.id
-       WHERE t.user_id = ? AND ci.status = 'completed' AND ci.image_url != ''
-       ORDER BY ci.created_at DESC LIMIT ?`,
+      workspaceImageHistoryQuery,
       [req.userId, limit]
     );
     return res.json({ images: images.rows });

@@ -325,3 +325,44 @@ export async function deepenPrompt(
 
   return responseText.trim();
 }
+
+export async function translatePrompt(
+  templateId: number,
+  currentPrompt: string,
+  cardId: number,
+  workspaceTaskId: number,
+  userId: number
+): Promise<string> {
+  const templateResult = query(
+    'SELECT pt.*, c.name as api_name, c.endpoint, c.model, c.api_key, c.format_type FROM prompt_templates pt LEFT JOIN chat_api_configs c ON pt.chat_api_id = c.id WHERE pt.id = ? AND pt.type = ?',
+    [templateId, 'translate']
+  );
+  const template = templateResult.rows[0];
+  if (!template) throw new Error('提示词翻译模板不存在');
+  if (!template.api_key) throw new Error('提示词翻译模板未关联可用的对话模型');
+
+  const content = template.content.replace(/\{\{prompt\}\}/g, currentPrompt);
+  const startTime = Date.now();
+  try {
+    const responseText = await callChatAPI({
+      id: template.chat_api_id,
+      name: template.api_name || template.name,
+      endpoint: template.endpoint,
+      model: template.model,
+      api_key: decrypt(template.api_key || ''),
+      format_type: template.format_type || 'openai',
+    }, '', content);
+    const translatedPrompt = responseText.trim();
+    query(
+      `INSERT INTO workspace_api_logs (user_id, api_type, api_config_id, api_config_name, workspace_task_id, card_id, request_params, response_status, response_body, duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [userId, 'chat', template.chat_api_id, template.api_name, workspaceTaskId, cardId, JSON.stringify({ template_id: templateId, prompt: currentPrompt.slice(0, 200), operation: 'translate' }), 'success', translatedPrompt.slice(0, 1000), Date.now() - startTime]
+    );
+    return translatedPrompt;
+  } catch (err) {
+    query(
+      `INSERT INTO workspace_api_logs (user_id, api_type, api_config_id, api_config_name, workspace_task_id, card_id, request_params, response_status, error_message, duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [userId, 'chat', template.chat_api_id, template.api_name, workspaceTaskId, cardId, JSON.stringify({ template_id: templateId, prompt: currentPrompt.slice(0, 200), operation: 'translate' }), 'failure', (err as Error).message, Date.now() - startTime]
+    );
+    throw err;
+  }
+}

@@ -9,9 +9,26 @@ interface PreviewItem {
   prompt?: string
   model_name?: string
   image_size?: string
+  source?: string
   started_at?: string | null
   completed_at?: string | null
   created_at?: string
+}
+
+export function getPreviewMetadata(item: Pick<PreviewItem, 'source' | 'model_name' | 'prompt'> & { generation_prompt?: string | null }) {
+  if (item.source === 'uploaded') {
+    return {
+      model_name: '用户上传图片',
+      prompt: '用户自上传图片',
+      duration_label: '0s',
+    }
+  }
+
+  return {
+    model_name: item.model_name,
+    prompt: item.generation_prompt ?? item.prompt,
+    duration_label: undefined,
+  }
 }
 
 function formatDuration(start: string | null | undefined, end: string | null | undefined): string {
@@ -97,9 +114,11 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
 }) {
   const [copied, setCopied] = useState(false)
 
+  const metadata = getPreviewMetadata(item ?? {})
+
   const handleCopy = async () => {
-    if (!item?.prompt) return
-    if (await copyText(item.prompt)) {
+    if (!metadata.prompt) return
+    if (await copyText(metadata.prompt)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
       toast.success('提示词已复制')
@@ -156,12 +175,12 @@ export default function ImagePreviewOverlay({ open, onOpenChange, imageUrl, item
                 {item.image_size && (
                   <span className="px-2.5 py-1 rounded-lg bg-foreground/5 backdrop-blur-sm text-xs">{item.image_size}</span>
                 )}
-                {item.model_name && <span>{item.model_name}</span>}
-                <span className="px-2.5 py-1 rounded-lg bg-foreground/5 backdrop-blur-sm text-xs">{formatDuration(item.started_at, item.completed_at)}</span>
+                {metadata.model_name && <span>{metadata.model_name}</span>}
+                <span className="px-2.5 py-1 rounded-lg bg-foreground/5 backdrop-blur-sm text-xs">{metadata.duration_label ?? formatDuration(item.started_at, item.completed_at)}</span>
               </div>
-              {item.prompt && (
+              {metadata.prompt && (
                 <div className="flex items-center gap-2">
-                  <p className="text-xs text-foreground/40 max-w-lg text-center line-clamp-2">{item.prompt}</p>
+                  <p className="text-xs text-foreground/40 max-w-lg text-center line-clamp-2">{metadata.prompt}</p>
                   <button
                     type="button"
                     onClick={handleCopy}

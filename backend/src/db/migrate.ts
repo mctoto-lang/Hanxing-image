@@ -207,7 +207,7 @@ export function migrate() {
     console.log('已添加 max_reference_images 字段到 models');
   }
   if (!modelColNames.has('reference_image_field')) {
-    db.exec("ALTER TABLE models ADD COLUMN reference_image_field TEXT DEFAULT 'image_url'");
+    db.exec("ALTER TABLE models ADD COLUMN reference_image_field TEXT DEFAULT 'images'");
     console.log('已添加 reference_image_field 字段到 models');
   }
   if (!modelColNames.has('max_retries')) {
@@ -215,9 +215,12 @@ export function migrate() {
     console.log('已添加 max_retries 字段到 models');
   }
   if (!modelColNames.has('api_format')) {
-    db.exec("ALTER TABLE models ADD COLUMN api_format TEXT NOT NULL DEFAULT 'openai'");
+    db.exec("ALTER TABLE models ADD COLUMN api_format TEXT NOT NULL DEFAULT 'grs'");
     console.log('已添加 api_format 字段到 models');
   }
+
+  db.exec("UPDATE models SET reference_image_field = 'images' WHERE reference_image_field IS NULL OR TRIM(reference_image_field) = ''");
+  db.exec("UPDATE models SET api_format = 'grs' WHERE api_format IS NULL OR TRIM(api_format) = ''");
   if (!modelColNames.has('extra_config')) {
     db.exec("ALTER TABLE models ADD COLUMN extra_config TEXT DEFAULT '{}'");
     console.log('已添加 extra_config 字段到 models');
@@ -234,6 +237,18 @@ export function migrate() {
     db.exec("ALTER TABLE models ADD COLUMN default_image_count INTEGER NOT NULL DEFAULT 1");
     console.log('已添加 default_image_count 字段到 models');
   }
+
+  db.exec(`
+    UPDATE models
+    SET extra_config = CASE WHEN api_format = 'gemini' THEN '{"grs_model_family":"gemini"}' ELSE '{"grs_model_family":"gpt"}' END,
+        api_format = 'grs',
+        is_active = 0,
+        visible_in_generate = 0,
+        visible_in_canvas = 0,
+        visible_in_workspace = 0,
+        visible_in_product = 0
+    WHERE api_format NOT IN ('grs', 'jimeng')
+  `);
 
   // API 调用记录表
   db.exec(`
@@ -278,8 +293,8 @@ export function migrate() {
           visible_in_workspace INTEGER NOT NULL DEFAULT 1,
           supports_reference_image INTEGER NOT NULL DEFAULT 0,
           max_reference_images INTEGER NOT NULL DEFAULT 1,
-          reference_image_field TEXT DEFAULT 'image_url',
-          api_format TEXT NOT NULL DEFAULT 'openai',
+          reference_image_field TEXT DEFAULT 'images',
+          api_format TEXT NOT NULL DEFAULT 'grs',
           extra_config TEXT DEFAULT '{}',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -439,6 +454,36 @@ export function migrate() {
   if (!cardImageColNames.has('generation_task_id')) {
     db.exec("ALTER TABLE card_images ADD COLUMN generation_task_id INTEGER REFERENCES generation_tasks(id)");
     console.log('已添加 generation_task_id 字段到 card_images');
+  }
+  if (!cardImageColNames.has('generation_prompt')) {
+    db.exec("ALTER TABLE card_images ADD COLUMN generation_prompt TEXT");
+    console.log('已添加 generation_prompt 字段到 card_images');
+  }
+  if (!cardImageColNames.has('source')) {
+    db.exec("ALTER TABLE card_images ADD COLUMN source TEXT NOT NULL DEFAULT 'generated'");
+    console.log('已添加 source 字段到 card_images');
+  }
+
+  const promptCardCols = db.prepare("PRAGMA table_info(prompt_cards)").all() as { name: string }[];
+  const promptCardColNames = new Set(promptCardCols.map(c => c.name));
+  if (!promptCardColNames.has('translated_prompt')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN translated_prompt TEXT");
+  }
+  if (!promptCardColNames.has('translation_source_prompt')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN translation_source_prompt TEXT");
+  }
+  if (!promptCardColNames.has('translation_status')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN translation_status TEXT NOT NULL DEFAULT 'none'");
+  }
+  if (!promptCardColNames.has('translation_template_id')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN translation_template_id INTEGER REFERENCES prompt_templates(id)");
+  }
+  if (!promptCardColNames.has('display_language')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN display_language TEXT NOT NULL DEFAULT 'zh'");
+  }
+  if (!promptCardColNames.has('reference_images')) {
+    db.exec("ALTER TABLE prompt_cards ADD COLUMN reference_images TEXT NOT NULL DEFAULT '[]'");
+    console.log('已添加 reference_images 字段到 prompt_cards');
   }
 
   const duplicatePromptCardIndexes = db.prepare(`
