@@ -155,7 +155,7 @@ export function normalizeApiFormat(value: unknown): ApiFormat {
 
 export function getGrsFamilyDescription(family: 'gpt' | 'gemini') {
   return family === 'gpt'
-    ? 'GPT 模型族使用用户选择的像素尺寸，不发送 imageSize'
+    ? 'GPT 模型族通过 aspectRatio 字段传递像素尺寸（如 1024x1024）'
     : 'Gemini 模型族将尺寸转换为宽高比，并可发送 1K/2K/4K 分辨率'
 }
 

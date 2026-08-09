@@ -1,7 +1,7 @@
 import { query } from '../db/index.js';
 import { uploadImage, generateFilename } from './cos.js';
 import { decrypt } from './crypto.js';
-import { buildGrsRequestBody, buildImageRequestSummary, buildImageResponseSummary, buildJimengRequestBody, type GrsModelFamily, validateQueuedGeneration } from '../lib/image-model-config.js';
+import { buildGrsRequestBody, buildImageRequestSummary, buildImageResponseSummary, buildJimengRequestBody, type GrsModelFamily, validateQueuedGeneration, resolveGrsGenerateEndpoint, resolveGrsResultEndpoint } from '../lib/image-model-config.js';
 
 interface Task {
   id: number;
@@ -942,32 +942,25 @@ class TaskQueue {
   private async callGRSAPI(model: any, task: Task, extraConfig: ExtraConfig, apiKey: string, taskTimeoutMs: number): Promise<string[]> {
     const imageUrls: string[] = [];
     const taskReferenceImages = this.getReferenceImages(task);
-    let endpoint = model.api_endpoint.replace(/\/+$/, '');
-
-    // GRS 端点通常是 /v1/api/generate
-    if (!endpoint.includes('/api/generate')) {
-      if (endpoint.endsWith('/v1')) {
-        endpoint += '/api/generate';
-      } else if (endpoint.endsWith('/v1/api')) {
-        endpoint += '/generate';
-      } else if (!endpoint.includes('/v1/')) {
-        endpoint += '/v1/api/generate';
-      }
-    }
+    const endpoint = resolveGrsGenerateEndpoint(model.api_endpoint);
 
     const replyType = extraConfig.reply_type || 'json';
+    const modelFamily = extraConfig.grs_model_family;
+    if (modelFamily !== 'gpt' && modelFamily !== 'gemini') {
+      throw new Error(`GRS 模型 ${model.name} 缺少有效的 grs_model_family 配置（需为 gpt 或 gemini），请在后台模型管理中正确配置`);
+    }
     const grsConfig = {
-      grs_model_family: extraConfig.grs_model_family || 'gemini',
+      grs_model_family: modelFamily,
       reply_type: extraConfig.reply_type === 'async' ? 'async' as const : 'json' as const,
       image_size_grs: ['1K', '2K', '4K'].includes(extraConfig.image_size_grs || '')
         ? extraConfig.image_size_grs as '1K' | '2K' | '4K'
         : undefined,
     };
-    const aspectRatio = grsConfig.grs_model_family === 'gpt' ? task.image_size : sizeToRatio(task.image_size);
 
     for (let i = 0; i < task.image_count; i++) {
       this.ensureTaskNotTimedOut(task, taskTimeoutMs);
-      console.log(`[GRS] 请求 ${endpoint} | model=${model.name} | aspectRatio=${aspectRatio} | replyType=${replyType} | 超时=${model.api_timeout || 120}秒`);
+      const aspectRatioPreview = modelFamily === 'gpt' ? task.image_size : sizeToRatio(task.image_size);
+      console.log(`[GRS] 请求 ${endpoint} | model=${model.name} | family=${modelFamily} | aspectRatio=${aspectRatioPreview} | replyType=${replyType} | 超时=${model.api_timeout || 120}秒`);
 
       const controller = new AbortController();
       const effectiveTimeoutMs = this.getEffectiveTimeoutMs(task, taskTimeoutMs, (model.api_timeout || 120) * 1000);
@@ -1030,18 +1023,7 @@ class TaskQueue {
     task: Task,
     taskTimeoutMs: number
   ): Promise<string> {
-    let pollEndpoint = apiEndpoint.replace(/\/+$/, '');
-
-    // GRS 轮询端点: GET {base}/v1/api/result?id={taskId}
-    if (pollEndpoint.includes('/api/generate')) {
-      pollEndpoint = pollEndpoint.replace('/api/generate', '/api/result');
-    } else if (pollEndpoint.includes('/v1/api')) {
-      pollEndpoint = pollEndpoint.replace('/v1/api', '/v1/api/result');
-    } else if (pollEndpoint.endsWith('/v1')) {
-      pollEndpoint += '/api/result';
-    } else {
-      pollEndpoint += '/v1/api/result';
-    }
+    const pollEndpoint = resolveGrsResultEndpoint(apiEndpoint);
 
     const separator = pollEndpoint.includes('?') ? '&' : '?';
     const fullPollUrl = `${pollEndpoint}${separator}id=${taskId}`;

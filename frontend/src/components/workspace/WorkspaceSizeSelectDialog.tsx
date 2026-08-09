@@ -13,8 +13,8 @@ interface Props {
 
 const DEFAULT_SIZES = [
   { label: '1:1 正方形', value: '1024x1024' },
-  { label: '2:3 竖版', value: '1024x1792' },
-  { label: '3:2 横版', value: '1792x1024' },
+  { label: '2:3 竖版', value: '1024x1536' },
+  { label: '3:2 横版', value: '1536x1024' },
   { label: '9:16 手机竖屏', value: '1080x1920' },
   { label: '16:9 横屏', value: '1920x1080' },
 ]

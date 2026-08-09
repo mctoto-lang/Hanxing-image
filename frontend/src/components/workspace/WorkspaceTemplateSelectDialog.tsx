@@ -27,7 +27,7 @@ export default function WorkspaceTemplateSelectDialog({ open, type, selected, on
   const fetchTemplates = async () => {
     setLoading(true)
     try {
-      const res = await apiFetch(`/api/admin/workspace/templates?type=${type}`)
+      const res = await apiFetch(`/api/workspace/templates?type=${type}`)
       const data = await res.json()
       setTemplates(data.templates || [])
     } catch {} finally {
@@ -45,7 +45,7 @@ export default function WorkspaceTemplateSelectDialog({ open, type, selected, on
           {loading ? (
             <div className="flex items-center justify-center py-6"><Spinner /></div>
           ) : templates.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-6">暂无模板，请先在管理后台创建</p>
+            <p className="text-sm text-muted-foreground text-center py-6">暂无模板，请先在模板管理中创建或联系管理员公开模板</p>
           ) : (
             templates.map(t => (
               <button

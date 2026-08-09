@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, ImagePlus, Loader2, MoreHorizontal, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -66,7 +67,11 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, sel
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [uploading, setUploading] = useState(false)
+  const [hoveredImage, setHoveredImage] = useState<CardImage | null>(null)
+  const [hoveredRect, setHoveredRect] = useState<DOMRect | null>(null)
+  const [imageNaturalSizes, setImageNaturalSizes] = useState<Record<number, { w: number; h: number }>>({})
   const inputRef = useRef<HTMLInputElement>(null)
+  const hideTimeoutRef = useRef<number | null>(null)
   const referenceLimit = getReferenceImageLimit(selectedImageModel)
 
   const fetchImages = useCallback(async () => {
@@ -100,6 +105,44 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, sel
   useEffect(() => {
     if (referenceLimit === 0 && mode === 'reference') setMode('selected')
   }, [mode, referenceLimit])
+
+  // 关闭弹窗或组件卸载时清除悬停预览与延时
+  useEffect(() => {
+    if (!open) {
+      if (hideTimeoutRef.current) { clearTimeout(hideTimeoutRef.current); hideTimeoutRef.current = null }
+      setHoveredImage(null)
+      setHoveredRect(null)
+    }
+  }, [open])
+
+  useEffect(() => () => {
+    if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current)
+  }, [])
+
+  const handleThumbnailHover = (image: CardImage, rect: DOMRect) => {
+    if (hideTimeoutRef.current) { clearTimeout(hideTimeoutRef.current); hideTimeoutRef.current = null }
+    setHoveredImage(image)
+    setHoveredRect(rect)
+  }
+
+  const handleThumbnailLeave = () => {
+    hideTimeoutRef.current = window.setTimeout(() => {
+      setHoveredImage(null)
+      setHoveredRect(null)
+    }, 100)
+  }
+
+  // 记录图片原始比例,用于按实际比例显示预览(消除正方形空白)
+  const handlePreviewImageLoad = (imageId: number, img: HTMLImageElement) => {
+    const w = img.naturalWidth
+    const h = img.naturalHeight
+    if (!w || !h) return
+    setImageNaturalSizes(prev => {
+      const cur = prev[imageId]
+      if (cur && cur.w === w && cur.h === h) return prev
+      return { ...prev, [imageId]: { w, h } }
+    })
+  }
 
   const completedImages = useMemo(() => images.filter(image => image.status === 'completed' && image.image_url), [images])
   const filteredImages = useMemo(() => {
@@ -223,7 +266,7 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, sel
                 const isReference = referenceImages.includes(image.image_url)
                 const isSelected = mode === 'reference' ? isReference : Boolean(image.is_selected)
                 const disabled = mode === 'reference' && !isReference && referenceImages.length >= referenceLimit
-                return <button key={image.id} type="button" disabled={disabled || selecting !== null} onClick={() => mode === 'reference' ? handleReferenceSelect(image) : void handleSelect(image)} className={cn('group relative aspect-square overflow-hidden rounded-xl border-2 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45', mode === 'reference' ? (isSelected ? 'border-violet-600 ring-2 ring-violet-500/30' : 'border-transparent hover:border-violet-400/60') : (isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-transparent hover:border-primary/50'))}>
+                return <button key={image.id} type="button" disabled={disabled || selecting !== null} onClick={() => mode === 'reference' ? handleReferenceSelect(image) : void handleSelect(image)} onMouseEnter={event => handleThumbnailHover(image, event.currentTarget.getBoundingClientRect())} onMouseLeave={handleThumbnailLeave} className={cn('group relative aspect-square overflow-hidden rounded-xl border-2 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-45', mode === 'reference' ? (isSelected ? 'border-violet-600 ring-2 ring-violet-500/30' : 'border-transparent hover:border-violet-400/60') : (isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-transparent hover:border-primary/50'))}>
                   <img src={toImageSrc(image.image_url, { width: 360, height: 360 })} alt="" className="h-full w-full object-cover" loading="lazy" />
                   {isSelected && <span className={cn('absolute right-2 top-2 rounded-full p-1 text-white', mode === 'reference' ? 'bg-violet-600' : 'bg-primary')}><Check className="h-3.5 w-3.5" /></span>}
                   {selecting === image.id && <span className="absolute inset-0 flex items-center justify-center bg-black/40"><Loader2 className="h-6 w-6 animate-spin text-white" /></span>}
@@ -242,6 +285,44 @@ export default function WorkspaceImageGalleryDialog({ open, onClose, cardId, sel
             <Button variant="outline" size="icon" className="h-8 w-8" aria-label="下一页" disabled={currentPage >= totalPages} onClick={() => setPage(current => current + 1)}><ChevronRight className="h-4 w-4" /></Button>
           </nav>}
         </div>}
+        {hoveredImage && hoveredRect && createPortal((() => {
+          // 按图片实际比例计算预览尺寸,消除正方形空白
+          const MAX_PREVIEW_W = 480, MAX_PREVIEW_H = 480, GAP = 12
+          const natural = imageNaturalSizes[hoveredImage.id]
+          // 未拿到尺寸前用 360 占位估算(图片加载后会自动调整)
+          let previewW = 360, previewH = 360
+          if (natural) {
+            const ratio = Math.min(MAX_PREVIEW_W / natural.w, MAX_PREVIEW_H / natural.h, 1)
+            previewW = Math.max(1, Math.round(natural.w * ratio))
+            previewH = Math.max(1, Math.round(natural.h * ratio))
+          }
+          const showOnLeft = hoveredRect.left > previewW + GAP
+          const style: CSSProperties = { width: previewW }
+          if (showOnLeft) {
+            style.top = hoveredRect.top
+            style.right = window.innerWidth - hoveredRect.left + GAP
+          } else {
+            style.top = hoveredRect.top
+            style.left = hoveredRect.right + GAP
+          }
+          // 垂直方向溢出修正
+          const bottom = (style.top as number) + previewH
+          if (bottom > window.innerHeight - 8) {
+            style.top = Math.max(8, window.innerHeight - previewH - 8)
+          }
+          return (
+            <div className="fixed z-[60] pointer-events-none" style={style} aria-hidden="true">
+              <img
+                src={toImageSrc(hoveredImage.image_url, { width: 720 })}
+                alt=""
+                onLoad={event => handlePreviewImageLoad(hoveredImage.id, event.currentTarget)}
+                className="block w-full rounded-lg border border-border bg-popover shadow-xl"
+                style={{ height: previewH }}
+                loading="lazy"
+              />
+            </div>
+          )
+        })(), document.body)}
       </DialogContent>
     </Dialog>
   )

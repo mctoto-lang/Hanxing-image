@@ -73,9 +73,9 @@ export default function WorkspaceNewTaskDialog({ open, onClose, onCreated, selec
     setLoadingOptions(true)
     try {
       const [fissionRes, extractRes, refineRes] = await Promise.all([
-        apiFetch('/api/admin/workspace/templates?type=fission'),
-        apiFetch('/api/admin/workspace/templates?type=extract'),
-        apiFetch('/api/admin/workspace/templates?type=deepen'),
+        apiFetch('/api/workspace/templates?type=fission'),
+        apiFetch('/api/workspace/templates?type=extract'),
+        apiFetch('/api/workspace/templates?type=deepen'),
       ])
       const [fissionData, extractData, refineData] = await Promise.all([
         fissionRes.json(), extractRes.json(), refineRes.json(),

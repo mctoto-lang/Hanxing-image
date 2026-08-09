@@ -4,6 +4,32 @@ export type GrsModelFamily = 'gpt' | 'gemini'
 export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = 'grs'
 export const DEFAULT_REFERENCE_IMAGE_FIELD = 'images'
 
+/**
+ * 将任意 GRS 中转站端点规范化为生成端点 /v1/api/generate。
+ * 兼容以下输入：
+ *   - https://host                       → https://host/v1/api/generate
+ *   - https://host/v1                    → https://host/v1/api/generate
+ *   - https://host/v1/api                → https://host/v1/api/generate
+ *   - https://host/v1/api/generate       → 原样返回
+ *   - https://host/v1/images/generations → https://host/v1/api/generate（OpenAI 风格端点自动转换）
+ */
+export function resolveGrsGenerateEndpoint(rawEndpoint: string): string {
+  const endpoint = rawEndpoint.replace(/\/+$/, '')
+  if (endpoint.includes('/api/generate')) return endpoint
+  if (endpoint.endsWith('/v1')) return `${endpoint}/api/generate`
+  if (endpoint.endsWith('/v1/api')) return `${endpoint}/generate`
+  const v1Match = endpoint.match(/^(.+\/v1)(\/.*)?$/)
+  if (v1Match) return `${v1Match[1]}/api/generate`
+  return `${endpoint}/v1/api/generate`
+}
+
+/**
+ * 将任意 GRS 中转站端点规范化为异步轮询端点 /v1/api/result。
+ */
+export function resolveGrsResultEndpoint(rawEndpoint: string): string {
+  return resolveGrsGenerateEndpoint(rawEndpoint).replace('/api/generate', '/api/result')
+}
+
 export interface ImageModelConfigInput {
   api_format?: unknown
   extra_config?: unknown
@@ -126,10 +152,31 @@ export function validateGenerationCapabilities(model: GenerationCapabilities, re
   if (images.length > 0 && !model.supports_reference_image) throw new Error('当前模型不支持参考图')
   const maxCount = Math.max(1, Number(model.max_reference_images) || 1)
   if (images.length > maxCount) throw new Error(`当前模型最多支持 ${maxCount} 张参考图`)
-  const sizes = parseSupportedSizes(model.supported_sizes)
+  const supportedSizes = parseSupportedSizes(model.supported_sizes)
   const size = typeof imageSize === 'string' ? imageSize.trim() : ''
-  if (sizes.size > 0 && !sizes.has(size)) throw new Error(`当前模型不支持尺寸 ${size}`)
+  if (supportedSizes.size > 0 && !isSizeSupported(size, supportedSizes, model)) {
+    throw new Error(`当前模型不支持尺寸 ${size}`)
+  }
   return images
+}
+
+function isSizeSupported(size: string, supportedSizes: Set<string>, model: GenerationCapabilities): boolean {
+  if (supportedSizes.has(size)) return true
+  // GPT 模型族按比例匹配，兼容管理员配置的等比例不同像素值（如 1024x1792 与 1024x1536 同为 2:3）
+  if (isGptModelFamily(model)) {
+    const targetRatio = sizeToRatio(size)
+    return [...supportedSizes].some(s => sizeToRatio(s) === targetRatio)
+  }
+  return false
+}
+
+function isGptModelFamily(model: GenerationCapabilities): boolean {
+  if (model.api_format !== 'grs') return false
+  try {
+    return parseExtraConfig(model.extra_config).grs_model_family === 'gpt'
+  } catch {
+    return false
+  }
 }
 
 export function validateQueuedGeneration(model: GenerationCapabilities, referenceImages: unknown, imageSize: unknown): string[] {
@@ -170,7 +217,7 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
 
 function sizeToRatio(size: string): string {
   const match = size.match(/^(\d+)x(\d+)$/i)
-  if (!match) return '1:1'
+  if (!match) throw new Error(`无法将尺寸 "${size}" 转换为比例，期望格式为 "宽x高"（如 "1024x1536"）`)
   const width = Number(match[1])
   const height = Number(match[2])
   const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b)
@@ -185,7 +232,7 @@ export function buildGrsRequestBody(input: BuildGrsRequestInput): Record<string,
     replyType: input.extraConfig.reply_type || 'json',
   }
   if (input.extraConfig.grs_model_family === 'gpt') {
-    body.size = input.imageSize
+    body.aspectRatio = input.imageSize
   } else {
     body.aspectRatio = sizeToRatio(input.imageSize)
   }

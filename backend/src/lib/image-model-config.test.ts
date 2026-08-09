@@ -12,6 +12,8 @@ import {
   buildJimengRequestBody,
   isLegacyImageApiFormat,
   getLegacyImageModelMigration,
+  resolveGrsGenerateEndpoint,
+  resolveGrsResultEndpoint,
   validateQueuedGeneration,
   validateGenerationCapabilities,
   validateImageModelConfig,
@@ -88,7 +90,7 @@ describe('GRS 请求字段和尺寸构造', () => {
     assert.equal(buildGrsRequestBody({ ...baseInput, referenceImageField: 'base_url' }).images, undefined)
   })
 
-  it('GPT 模型族使用 size 字段传递像素尺寸', () => {
+  it('GPT 模型族通过 aspectRatio 字段传递像素尺寸', () => {
     assert.deepEqual(buildGrsRequestBody({
       model: 'gpt-image-2',
       prompt: '海边日落',
@@ -98,10 +100,23 @@ describe('GRS 请求字段和尺寸构造', () => {
     }), {
       model: 'gpt-image-2',
       prompt: '海边日落',
-      size: '1536x1024',
+      aspectRatio: '1536x1024',
       replyType: 'json',
       images: ['https://example.com/a.png'],
     })
+  })
+
+  it('GPT 模型族 2:3 尺寸传递原始像素值而非比例', () => {
+    assert.equal(
+      buildGrsRequestBody({
+        model: 'gpt-image-2',
+        prompt: '海边日落',
+        imageSize: '1024x1536',
+        extraConfig: { grs_model_family: 'gpt' },
+        referenceImages: [],
+      }).aspectRatio,
+      '1024x1536'
+    )
   })
 
   it('Gemini 模型族使用约分比例并发送分辨率', () => {
@@ -118,6 +133,16 @@ describe('GRS 请求字段和尺寸构造', () => {
       replyType: 'async',
       imageSize: '2K',
     })
+  })
+
+  it('Gemini 模型族遇到非 WxH 格式尺寸时抛出错误而非静默回退 1:1', () => {
+    assert.throws(() => buildGrsRequestBody({
+      model: 'nano-banana',
+      prompt: '海边日落',
+      imageSize: '2:3',
+      extraConfig: { grs_model_family: 'gemini' },
+      referenceImages: [],
+    }), /无法将尺寸/)
   })
 })
 
@@ -263,5 +288,62 @@ describe('统一生成能力校验', () => {
   it('拒绝模型未配置的尺寸并兼容 JSON 字符串配置', () => {
     assert.throws(() => validateGenerationCapabilities(model, [], '1536x1024'), /不支持尺寸 1536x1024/)
     assert.doesNotThrow(() => validateGenerationCapabilities({ ...model, supported_sizes: JSON.stringify(model.supported_sizes) }, [], '1024x1024'))
+  })
+
+  it('GPT 模型族按比例匹配，兼容等比例不同像素值', () => {
+    const gptModel = {
+      ...model,
+      api_format: 'grs',
+      extra_config: JSON.stringify({ grs_model_family: 'gpt' }),
+      supported_sizes: { ratios: [{ ratio: '1:1', width: 1024, height: 1024 }] },
+    }
+    // 提交 2048x2048（同为 1:1）应通过
+    assert.doesNotThrow(() => validateGenerationCapabilities(gptModel, [], '2048x2048'))
+    // 精确匹配仍通过
+    assert.doesNotThrow(() => validateGenerationCapabilities(gptModel, [], '1024x1024'))
+    // 不同比例应拒绝
+    assert.throws(() => validateGenerationCapabilities(gptModel, [], '1536x1024'), /不支持尺寸 1536x1024/)
+  })
+
+  it('非 GPT 模型族仍按精确尺寸匹配', () => {
+    const geminiModel = {
+      ...model,
+      api_format: 'grs',
+      extra_config: JSON.stringify({ grs_model_family: 'gemini' }),
+      supported_sizes: { ratios: [{ ratio: '1:1', width: 1024, height: 1024 }] },
+    }
+    assert.throws(() => validateGenerationCapabilities(geminiModel, [], '2048x2048'), /不支持尺寸 2048x2048/)
+  })
+})
+
+describe('GRS 端点规范化', () => {
+  it('将裸域名补全为 /v1/api/generate', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('将 /v1 后缀补全为 /v1/api/generate', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn/v1'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('将 /v1/api 后缀补全为 /v1/api/generate', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn/v1/api'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('保留已是 /v1/api/generate 的端点', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn/v1/api/generate'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('将 OpenAI 风格端点 /v1/images/generations 转换为 GRS 生成端点', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn/v1/images/generations'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('去除尾部斜杠后再规范化', () => {
+    assert.equal(resolveGrsGenerateEndpoint('https://grsai.dakka.com.cn/v1/'), 'https://grsai.dakka.com.cn/v1/api/generate')
+  })
+
+  it('轮询端点统一解析为 /v1/api/result', () => {
+    assert.equal(resolveGrsResultEndpoint('https://grsai.dakka.com.cn'), 'https://grsai.dakka.com.cn/v1/api/result')
+    assert.equal(resolveGrsResultEndpoint('https://grsai.dakka.com.cn/v1/api/generate'), 'https://grsai.dakka.com.cn/v1/api/result')
+    assert.equal(resolveGrsResultEndpoint('https://grsai.dakka.com.cn/v1/images/generations'), 'https://grsai.dakka.com.cn/v1/api/result')
   })
 })
